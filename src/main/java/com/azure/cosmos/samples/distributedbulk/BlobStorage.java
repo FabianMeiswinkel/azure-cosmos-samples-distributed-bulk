@@ -10,7 +10,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -34,7 +33,7 @@ public class BlobStorage {
         .buildClient()
         .getBlobContainerClient(Configs.getBlobStorageContainerName());
 
-    private static File ensureFileCore(String blobName) throws FileNotFoundException {
+    private static File ensureFileCore(String blobName) {
         File cacheFile = Path.of(localCacheDirectory, blobName).toFile();
         String fileLock =
             fileLocks.computeIfAbsent(cacheFile.getAbsolutePath(), fileName -> UUID.randomUUID().toString());
@@ -71,7 +70,7 @@ public class BlobStorage {
         }
     }
 
-    private static File ensureFile(String blobName) {
+    public static File ensureFile(String blobName) {
         for (int i = 0; i < 10; i++) {
             if (i > 0) {
                 logger.warn("RETRY {} to access file {}", i, blobName);
@@ -86,7 +85,7 @@ public class BlobStorage {
 
         throw new IllegalStateException("Can't access file '" + blobName + "'.");
     }
-    public static List<InputFileInfo> searchWithWildcard(String searchPatternRegex) throws IOException {
+    public static List<InputFileInfo> searchWithWildcard(String searchPatternRegex) {
         Pattern pattern = Pattern.compile(searchPatternRegex);
 
         List<InputFileInfo> inputFiles = Collections.synchronizedList(new ArrayList<>());

@@ -1,6 +1,5 @@
 package com.azure.cosmos.samples.distributedbulk;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
@@ -23,14 +22,14 @@ public class Main {
 
     public static String getMachineId() {
         return machineId;
-    };
+    }
 
     private static String computeMachineId(String[] args) {
         String prefix = "";
 
 
 
-        String suffix = args != null && args.length > 1 ? args[0] : "";
+        String suffix = args != null && args.length >= 2 ? args[1] + "_" + args[0]  : "";
 
         logger.info("Trying to read VM metadata from IMDS endpoint to extract VMId...");
         try {
@@ -98,18 +97,22 @@ public class Main {
                 JobId = args[1];
             } else if (args.length == 2 && "process".equalsIgnoreCase(args[0])) {
                 JobId = args[1];
+                int returnCode = processJob(args[1]);
+                if (returnCode != ErrorCodes.WAITING) {
+                    System.exit(returnCode);
+                }
+
+                return;
             } else {
                 printHelp(args);
                 System.exit(ErrorCodes.INCORRECT_CMDLINE_PARAMETERS);
                 return;
             }
         } catch (Throwable error) {
-            logger.error("FAILURE: {}", error);
-            System.exit((ErrorCodes.FAILED));
-            return;
+            logger.error("FAILURE: {}", error.getMessage(), error);
         }
 
-        System.exit(ErrorCodes.SUCCESS);
+        System.exit(ErrorCodes.FAILED);
     }
 
     private static void printHelp(String[] args) {
@@ -148,6 +151,22 @@ public class Main {
                 "Attempt to create job with ID {} and input file search pattern {} failed.",
                 jobId,
                 inputFileSearchPattern,
+                error);
+
+            return ErrorCodes.FAILED;
+        }
+    }
+
+    private static int processJob(String jobId) {
+
+        try {
+            BatchProcessor.startProcessing(jobId, Configs.getMaxConcurrentBatchesPerMachine());
+
+            return ErrorCodes.WAITING;
+        } catch (Exception error) {
+            logger.error(
+                "Attempt to process job with ID {} failed.",
+                jobId,
                 error);
 
             return ErrorCodes.FAILED;

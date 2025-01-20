@@ -9,7 +9,7 @@ import java.io.IOException;
 public class LongToStringSerializer extends JsonSerializer<Long> {
     @Override
     public void serialize(Long value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
-        Long effectiveValue = value == null ? 0 : value;
-        gen.writeString(effectiveValue.toString());
+        long effectiveValue = value == null ? 0 : value;
+        gen.writeString(String.valueOf(effectiveValue));
     }
 }

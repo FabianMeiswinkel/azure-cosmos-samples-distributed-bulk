@@ -8,7 +8,7 @@ import java.io.IOException;
 
 public class StringToLongDeserializer extends JsonDeserializer<Long> {
     @Override
-    public Long deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+    public Long deserialize(JsonParser p, DeserializationContext ctx) throws IOException {
         String value = p.getText();
 
         if (value == null) {

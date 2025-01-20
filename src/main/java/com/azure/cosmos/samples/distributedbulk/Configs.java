@@ -4,13 +4,17 @@ import com.azure.core.credential.TokenCredential;
 import com.azure.cosmos.ConsistencyLevel;
 import com.azure.cosmos.CosmosAsyncClient;
 import com.azure.cosmos.CosmosClient;
+import com.azure.cosmos.CosmosContainer;
 import com.azure.cosmos.CosmosClientBuilder;
 import com.azure.cosmos.CosmosDiagnosticsHandler;
 import com.azure.cosmos.CosmosDiagnosticsThresholds;
 import com.azure.cosmos.models.CosmosClientTelemetryConfig;
+import com.azure.cosmos.samples.distributedbulk.model.WriteStrategy;
 import com.azure.identity.DefaultAzureCredentialBuilder;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import java.util.function.Function;
 
 public final class Configs {
@@ -19,6 +23,10 @@ public final class Configs {
         .authorityHost(Configs.getAadLoginUri())
         .tenantId(Configs.getAadTenantId())
         .build();
+
+    private final static WriteStrategy writeStrategy = getWriteStrategyCore();
+
+    private final static AtomicInteger maxConcurrentPartitionCount = new AtomicInteger(-1);
 
      /**
      * Returns the given string if it is nonempty; {@code null} otherwise.
@@ -42,11 +50,76 @@ public final class Configs {
         return getRequiredConfigProperty("ACCOUNT_ENDPOINT", v -> v);
     }
 
-    public static int maxRecordsPerBatch() {
+    public static int getMaxConcurrentPartitionCount() {
+        int snapshot = maxConcurrentPartitionCount.get();
+        if (snapshot >= 1024) {
+            return snapshot;
+        }
+
+        try (CosmosClient client = getCosmosClient(null)) {
+            CosmosContainer targetContainer = client
+                .getDatabase(getCosmosDatabaseName())
+                .getContainer(getCosmosContainerName());
+
+            int partitionCount = targetContainer.getFeedRanges().size();
+            int targetMaxConcurrentPartitionCount = Math.max(1024, 5 * partitionCount);
+            return maxConcurrentPartitionCount
+                .compareAndExchange(snapshot, targetMaxConcurrentPartitionCount);
+
+        }
+    }
+
+    public static int getMaxRecordsPerBatch() {
         return getOptionalConfigProperty(
             "MAX_RECORDS_PER_BATCH",
             5000,
-            t -> Integer.parseInt(t));
+            Integer::parseInt);
+    }
+
+    public static int getMaxRetryCount() {
+        return getOptionalConfigProperty(
+            "MAX_RETRY_COUNT",
+            20,
+            Integer::parseInt);
+    }
+
+    public static int getInitialMicroBatchSize() {
+        return getOptionalConfigProperty(
+            "INITIAL_MICRO_BATCH_SIZE",
+            1,
+            Integer::parseInt);
+    }
+
+    public static int getMaxConcurrentBatchesPerMachine() {
+        return getOptionalConfigProperty(
+            "MAX_CONCURRENT_BATCHES_PER_MACHINE",
+            8,
+            Integer::parseInt);
+    }
+
+    public static int getMaxMicroBatchSize() {
+        return getOptionalConfigProperty(
+            "MAX_MICRO_BATCH_SIZE",
+            100,
+            Integer::parseInt);
+    }
+
+    public static int getMaxMicroBatchConcurrencyPerPartition() {
+        return getOptionalConfigProperty(
+            "MAX_MICRO_BATCH_CONCURRENCY_PER_PARTITION",
+            1,
+            Integer::parseInt);
+    }
+
+    public static WriteStrategy getWriteStrategy() {
+        return writeStrategy;
+    }
+
+    private static WriteStrategy getWriteStrategyCore() {
+        return getOptionalConfigProperty(
+            "WRITE_STRATEGY",
+            WriteStrategy.UPSERT,
+            WriteStrategy::fromValue);
     }
 
     public static String getCosmosDatabaseName() {
@@ -106,10 +179,6 @@ public final class Configs {
             "AAD_LOGIN_ENDPOINT",
             "https://login.microsoftonline.com/",
             v -> v);
-    }
-
-    public static String getAadSubscriptionId() {
-        return getOptionalConfigProperty("AAD_SUBSCRIPTION_ID", null, v -> v);
     }
 
     public static String getAadManagedIdentityId() {

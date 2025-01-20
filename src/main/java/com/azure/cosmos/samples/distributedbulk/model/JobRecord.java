@@ -10,21 +10,28 @@ import java.util.Objects;
 public class JobRecord extends StatusTracker {
     private final String id;
 
+    @JsonProperty("_etag")
+    private final String etag;
+
     private final List<InputFileRecord> inputFiles;
 
     @JsonCreator
     public JobRecord(
         @JsonProperty("id") String id,
+        @JsonProperty("_etag") String etag,
         @JsonProperty("inputFiles") List<InputFileRecord> inputFiles) {
 
         Objects.requireNonNull(id, "Argument 'id' must not be null.");
         this.id = id;
+        this.etag = etag;
         this.inputFiles = inputFiles != null ? inputFiles : new ArrayList<>();
     }
 
     public String getId() {
         return this.id;
     }
+
+    public String getEtag() { return this.etag; }
 
     public List<InputFileRecord> getInputFiles() {
         return this.inputFiles;

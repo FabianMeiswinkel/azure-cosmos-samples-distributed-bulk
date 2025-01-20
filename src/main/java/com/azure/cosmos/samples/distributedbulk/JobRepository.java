@@ -2,12 +2,11 @@ package com.azure.cosmos.samples.distributedbulk;
 
 import com.azure.cosmos.CosmosContainer;
 import com.azure.cosmos.CosmosException;
-import com.azure.cosmos.models.CosmosItemResponse;
+import com.azure.cosmos.models.CosmosItemRequestOptions;
 import com.azure.cosmos.models.PartitionKey;
 import com.azure.cosmos.samples.distributedbulk.model.BatchRecord;
 import com.azure.cosmos.samples.distributedbulk.model.InputFileRecord;
 import com.azure.cosmos.samples.distributedbulk.model.JobRecord;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,7 +15,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class JobRepository {
-    private final static ObjectMapper mapper = new ObjectMapper();
     private final static Logger logger = LoggerFactory.getLogger(JobRepository.class);
     private static final CosmosContainer jobContainer =
         Configs
@@ -26,7 +24,7 @@ public class JobRepository {
 
     public static void ensureJobDoesNotExistYet(String jobId) {
         try {
-            CosmosItemResponse<ObjectNode> jobResponse = jobContainer.readItem(
+            jobContainer.readItem(
                 jobId,
                 new PartitionKey(jobId),
                 ObjectNode.class);
@@ -56,6 +54,36 @@ public class JobRepository {
         }
     }
 
+    public static JobRecord getJobRecord(String jobId) {
+        return jobContainer.readItem(
+                jobId,
+                new PartitionKey(jobId),
+                JobRecord.class).getItem();
+    }
+
+    public static boolean tryUpdateJobRecord(String jobId, JobRecord jobRecord, String etag) {
+        try {
+            CosmosItemRequestOptions requestOptions = new CosmosItemRequestOptions();
+
+            requestOptions.setIfMatchETag(etag);
+
+            jobContainer.replaceItem(
+                jobRecord,
+                jobId,
+                new PartitionKey(jobId),
+                requestOptions);
+
+            return true;
+        }
+        catch (CosmosException cosmosException) {
+            if (cosmosException.getStatusCode() == 412) {
+                return false;
+            }
+
+            throw cosmosException;
+        }
+    }
+
     public static void createNewJob(String jobId, List<InputFileInfo> inputFileInfos) {
         ensureJobDoesNotExistYet(jobId);
 
@@ -69,7 +97,7 @@ public class JobRepository {
             while (offset < inputFileInfo.getRecordCount()) {
                 long recordCount = Math.min(
                     inputFileInfo.getRecordCount() - offset,
-                    Configs.maxRecordsPerBatch());
+                    Configs.getMaxRecordsPerBatch());
 
                 batches.add(new BatchRecord(index, recordCount, offset));
                 offset += recordCount;
@@ -83,7 +111,7 @@ public class JobRepository {
                 batches));
         }
 
-        JobRecord newJob = new JobRecord(jobId, inputFiles);
+        JobRecord newJob = new JobRecord(jobId, null, inputFiles);
 
         try {
             jobContainer.createItem(newJob, new PartitionKey(jobId), null);

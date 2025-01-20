@@ -9,7 +9,7 @@ import java.io.IOException;
 public class DoubleToStringSerializer extends JsonSerializer<Double> {
     @Override
     public void serialize(Double value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
-        Double effectiveValue = value == null ? 0 : value;
-        gen.writeString(effectiveValue.toString());
+        double effectiveValue = value == null ? 0 : value;
+        gen.writeString(String.valueOf(effectiveValue));
     }
 }

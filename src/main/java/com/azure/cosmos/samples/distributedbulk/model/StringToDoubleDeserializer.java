@@ -8,7 +8,7 @@ import java.io.IOException;
 
 public class StringToDoubleDeserializer extends JsonDeserializer<Double> {
     @Override
-    public Double deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+    public Double deserialize(JsonParser p, DeserializationContext ctx) throws IOException {
         String value = p.getText();
 
         if (value == null) {

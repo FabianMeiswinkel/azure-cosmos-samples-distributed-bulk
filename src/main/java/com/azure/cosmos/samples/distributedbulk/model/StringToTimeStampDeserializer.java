@@ -9,7 +9,7 @@ import java.time.Instant;
 
 public class StringToTimeStampDeserializer extends JsonDeserializer<Instant> {
     @Override
-    public Instant deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+    public Instant deserialize(JsonParser p, DeserializationContext ctx) throws IOException {
         String value = p.getText();
 
         if (value == null) {

@@ -15,13 +15,13 @@ public class BatchRecord extends StatusTracker {
     private final long recordCount;
 
     @JsonSerialize(using = LongToStringSerializer.class)
-    private final long index;
+    private final int index;
 
     private String owningWorker;
 
     @JsonDeserialize(using = StringToTimeStampDeserializer.class)
     @JsonSerialize(using = TimeStampToStringSerializer.class)
-    private Instant owningWorkerAssignedAt;
+    private Instant owningWorkerLastModified;
 
     @JsonCreator
     public BatchRecord(
@@ -30,10 +30,10 @@ public class BatchRecord extends StatusTracker {
         @JsonProperty("offset") @JsonDeserialize(using = StringToLongDeserializer.class) Long offset) {
 
         this.recordCount = recordCount != null ? recordCount : 0L;
-        this.index = index != null ? index : 0L;
+        this.index = index != null ? index.intValue() : 0;
         this.offset = offset != null ? offset : 0L;
         this.owningWorker = "";
-        this.owningWorkerAssignedAt = Instant.EPOCH;
+        this.owningWorkerLastModified = Instant.EPOCH;
     }
 
     public long getOffset() {
@@ -44,6 +44,8 @@ public class BatchRecord extends StatusTracker {
         return this.recordCount;
     }
 
+    public int getIndex() { return this.index; }
+
     public String getOwningWorker() {
         return this.owningWorker;
     }
@@ -52,11 +54,11 @@ public class BatchRecord extends StatusTracker {
         this.owningWorker = value;
     }
 
-    public Instant getOwningWorkerAssignedAt() {
-        return this.owningWorkerAssignedAt;
+    public Instant getOwningWorkerLastModified() {
+        return this.owningWorkerLastModified;
     }
 
-    public void setOwningWorkerAssignedAt(Instant value) {
-        this.owningWorkerAssignedAt = value;
+    public void setOwningWorkerLastModified(Instant value) {
+        this.owningWorkerLastModified = value;
     }
 }
