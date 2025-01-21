@@ -26,6 +26,10 @@ public class Batch implements Runnable {
 
     private final String identifier;
 
+    private final String jobId;
+
+    private final int index;
+
     public Batch(
         String jobId,
         String machineId,
@@ -38,8 +42,10 @@ public class Batch implements Runnable {
         Objects.requireNonNull(machineId, "Argument 'machineId' must not be null.");
         Objects.requireNonNull(blobName, "Argument 'blobName' must not be null.");
 
+        this.jobId = jobId;
         this.blobName = blobName;
         this.offset = offset;
+        this.index = index;
         this.recordCount = recordCount;
         this.identifier = "Batch_" + blobName + "_" + index;
     }
@@ -65,7 +71,7 @@ public class Batch implements Runnable {
         }
 
         long lineIndex = offset;
-        try (BulkWriter writer = new BulkWriter(this.identifier)) {
+        try (BulkWriter writer = new BulkWriter(this.jobId, this.blobName, this.index, this.identifier)) {
 
             for (String line : lines) {
                 ObjectNode doc;

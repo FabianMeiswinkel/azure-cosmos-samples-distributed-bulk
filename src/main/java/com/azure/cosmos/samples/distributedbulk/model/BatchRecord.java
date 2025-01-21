@@ -14,7 +14,7 @@ public class BatchRecord extends StatusTracker {
     @JsonSerialize(using = LongToStringSerializer.class)
     private final long recordCount;
 
-    @JsonSerialize(using = LongToStringSerializer.class)
+    @JsonSerialize(using = IntegerToStringSerializer.class)
     private final int index;
 
     private String owningWorker;
@@ -25,12 +25,12 @@ public class BatchRecord extends StatusTracker {
 
     @JsonCreator
     public BatchRecord(
-        @JsonProperty("index") @JsonDeserialize(using = StringToLongDeserializer.class) Long index,
+        @JsonProperty("index") @JsonDeserialize(using = StringToIntegerDeserializer.class) Integer index,
         @JsonProperty("recordCount") @JsonDeserialize(using = StringToLongDeserializer.class) Long recordCount,
         @JsonProperty("offset") @JsonDeserialize(using = StringToLongDeserializer.class) Long offset) {
 
         this.recordCount = recordCount != null ? recordCount : 0L;
-        this.index = index != null ? index.intValue() : 0;
+        this.index = index != null ? index : 0;
         this.offset = offset != null ? offset : 0L;
         this.owningWorker = "";
         this.owningWorkerLastModified = Instant.EPOCH;
