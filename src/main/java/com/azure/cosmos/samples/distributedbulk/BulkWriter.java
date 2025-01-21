@@ -2,11 +2,7 @@ package com.azure.cosmos.samples.distributedbulk;
 
 import com.azure.cosmos.CosmosAsyncClient;
 import com.azure.cosmos.CosmosAsyncContainer;
-import com.azure.cosmos.CosmosEndToEndOperationLatencyPolicyConfig;
-import com.azure.cosmos.CosmosEndToEndOperationLatencyPolicyConfigBuilder;
 import com.azure.cosmos.CosmosException;
-import com.azure.cosmos.implementation.CosmosBulkExecutionOptionsImpl;
-import com.azure.cosmos.implementation.ImplementationBridgeHelpers;
 import com.azure.cosmos.models.CosmosBulkExecutionOptions;
 import com.azure.cosmos.models.CosmosBulkExecutionThresholdsState;
 import com.azure.cosmos.models.CosmosBulkItemResponse;
@@ -173,7 +169,7 @@ class BulkWriter implements AutoCloseable {
             .setInitialMicroBatchSize(Configs.getInitialMicroBatchSize())
             .setMaxMicroBatchSize(Configs.getMaxMicroBatchSize())
             .setMaxMicroBatchConcurrency(Configs.getMaxMicroBatchConcurrencyPerPartition());
-        CosmosBulkExecutionOptionsImpl optionsImpl = ImplementationBridgeHelpers
+        /* CosmosBulkExecutionOptionsImpl optionsImpl = ImplementationBridgeHelpers
             .CosmosBulkExecutionOptionsHelper
             .getCosmosBulkExecutionOptionsAccessor()
             .getImpl(options);
@@ -185,7 +181,7 @@ class BulkWriter implements AutoCloseable {
 
         optionsImpl.setMinTargetMicroBatchSize(1);
         optionsImpl.setMaxConcurrentCosmosPartitions(maxConcurrentPartitionCount);
-        optionsImpl.setCosmosEndToEndLatencyPolicyConfig(e2eTimeoutPolicy);
+        optionsImpl.setCosmosEndToEndLatencyPolicyConfig(e2eTimeoutPolicy); */
 
         this.bulkOptions = options;
     }
@@ -272,7 +268,11 @@ class BulkWriter implements AutoCloseable {
         this.scheduleWrite(itemOperation);
     }
 
-    private void scheduleRetry(CosmosItemOperation cosmosItemOperation, Throwable cause) {
+    private void scheduleRetry(
+        CosmosItemOperation cosmosItemOperation,
+        Duration retryAfterDuration,
+        Throwable cause) {
+
         OperationContext originalCtx = cosmosItemOperation.getContext();
         int retryCount = originalCtx.getRetryCount();
         if (retryCount > Configs.getMaxRetryCount()) {
@@ -303,9 +303,11 @@ class BulkWriter implements AutoCloseable {
                     originalCtx.createForRetry());
         }
 
-        if (retryCount > 0) {
+        if (retryCount > 0 || retryAfterDuration != null) {
             // min 10ms per retry - max 1 second per retry
-            int delayInMs = 10 * retryCount + rnd.nextInt( 990 * retryCount);
+            int delayInMs = Math.max(
+                10 * retryCount + rnd.nextInt( 990 * retryCount),
+                retryAfterDuration != null ? Math.min((int)retryAfterDuration.toMillis(), 5000) : 0);
             logger.warn(
                 "Item Batch {}, Line {}, Id {} failed already {} times. Retrying again in {}ms.",
                 originalCtx.getIdentifier(),
@@ -371,10 +373,11 @@ class BulkWriter implements AutoCloseable {
         if (isRetry) {
             bulkInputEmitter.emitNext(cosmosItemOperation, emitFailureHandler);
         } else {
+            OperationContext ctx = cosmosItemOperation.getContext();
             synchronized (this.lockObject) {
                 bulkInputEmitter.emitNext(cosmosItemOperation, emitFailureHandler);
                 this.operationsScheduled.incrementAndGet();
-                this.pendingOperations.add(cosmosItemOperation.getId());
+                this.pendingOperations.add(ctx.getId());
                 this.ensureIngestionStarted();
             }
         }
@@ -430,6 +433,7 @@ class BulkWriter implements AutoCloseable {
             }
 
             if (Duration.between(lastSnapshot, Instant.now()).compareTo(Duration.ofMinutes(1)) > 0) {
+                lastSnapshot = Instant.now();
                 synchronized (this.lockObject) {
                     List<String> samples = this
                         .pendingOperations
@@ -473,12 +477,15 @@ class BulkWriter implements AutoCloseable {
     private void updateStatusCore(boolean isLastUpdate) {
         try {
             JobRecord job = JobRepository.getJobRecord(this.jobId);
+            if (job.getStatus() == IngestionStatus.COMPLETED) {
+                return;
+            }
             InputFileRecord file = JobRepository.findFile(job, this.blobName);
             BatchRecord batch = JobRepository.findBatch(file, this.index);
 
             batch.setOwningWorkerLastModified(Instant.now());
             batch.setOwningWorker(Main.getMachineId());
-            if (batch.getRecordCount() == 0
+            if (batch.getRecordCount() == 0 || batch.getStatus() == IngestionStatus.COMPLETED
                 || (this.flushCalled.get() && this.operationsScheduled.get() == 0)) {
                 batch.setStatus(IngestionStatus.COMPLETED);
                 batch.setEstimatedProgress(1d);
@@ -601,7 +608,7 @@ class BulkWriter implements AutoCloseable {
                 }
             })
             .doOnComplete(() -> {
-                logger.error("Ingestion for batch [{}] completed successfully.", this.identifier);
+                logger.info("Ingestion for batch [{}] completed successfully.", this.identifier);
                 this.lock.lock();
                 try {
                     this.flushCompletedCondition.signal();
@@ -634,7 +641,7 @@ class BulkWriter implements AutoCloseable {
             markSuccess(ctx, itemOperation, 409);
         } else if (shouldRetry(itemResponse.getStatusCode())) {
             //re-scheduling
-            scheduleRetry(itemOperation, null);
+            scheduleRetry(itemOperation, itemResponse.getRetryAfterDuration(), null);
         } else {
             throw new IllegalStateException(
                 "Bulk ingestion of item Batch ["
@@ -658,14 +665,14 @@ class BulkWriter implements AutoCloseable {
                 ctx.getId(),
                 itemOperation.getPartitionKeyValue(),
                 exception);
-            scheduleRetry(itemOperation, exception);
+            scheduleRetry(itemOperation, null, exception);
         } else {
             CosmosException cosmosException = (CosmosException) exception;
             if (cosmosException.getStatusCode() == 409) {
                 // handle as success
                 this.markSuccess(ctx, itemOperation, 409);
             } else if (shouldRetry(cosmosException.getStatusCode())) {
-                scheduleRetry(itemOperation, exception);
+                scheduleRetry(itemOperation, cosmosException.getRetryAfterDuration(), exception);
             } else  {
                 throw new IllegalStateException(
                     "Bulk ingestion of item Batch ["
@@ -703,6 +710,8 @@ class BulkWriter implements AutoCloseable {
                     "Ingestion completed for Batch [{}] [{}] items ingested.",
                     ctx.getIdentifier(),
                     completedCountSnapshot);
+
+                this.updateStatusLastTime();
 
                 return;
             }

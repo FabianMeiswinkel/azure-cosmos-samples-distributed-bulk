@@ -130,8 +130,8 @@ public class BatchProcessor {
 
                 if (success) {
                     return new Batch(
-                        Main.getMachineId(),
                         candidate.jobRecord.getId(),
+                        Main.getMachineId(),
                         candidate.inputFileRecord.getBlobName(),
                         candidate.batchRecord.getIndex(),
                         candidate.batchRecord.getOffset(),
@@ -139,7 +139,7 @@ public class BatchProcessor {
                 }
 
                 // Other worker modified job record - retry after short backoff
-                Thread.sleep(10 + rnd.nextInt(1000));
+                Thread.sleep(1000 + 100 * rnd.nextInt(50));
             }
         }
 

@@ -8,9 +8,16 @@ import com.azure.cosmos.CosmosContainer;
 import com.azure.cosmos.CosmosClientBuilder;
 import com.azure.cosmos.CosmosDiagnosticsHandler;
 import com.azure.cosmos.CosmosDiagnosticsThresholds;
+import com.azure.cosmos.CosmosEndToEndOperationLatencyPolicyConfigBuilder;
+import com.azure.cosmos.CosmosException;
+import com.azure.cosmos.CosmosOperationPolicy;
+import com.azure.cosmos.ThrottlingRetryOptions;
 import com.azure.cosmos.models.CosmosClientTelemetryConfig;
+import com.azure.cosmos.models.CosmosRequestOptions;
 import com.azure.cosmos.samples.distributedbulk.model.WriteStrategy;
 import com.azure.identity.DefaultAzureCredentialBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -18,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 public final class Configs {
+    private static final Logger logger = LoggerFactory.getLogger(Configs.class);
     private static final TokenCredential credential = new DefaultAzureCredentialBuilder()
         .managedIdentityClientId(Configs.getAadManagedIdentityId())
         .authorityHost(Configs.getAadLoginUri())
@@ -56,7 +64,7 @@ public final class Configs {
             return snapshot;
         }
 
-        try (CosmosClient client = getCosmosClient(null)) {
+        try (CosmosClient client = getCosmosClient("Configs")) {
             CosmosContainer targetContainer = client
                 .getDatabase(getCosmosDatabaseName())
                 .getContainer(getCosmosContainerName());
@@ -66,6 +74,15 @@ public final class Configs {
             return maxConcurrentPartitionCount
                 .compareAndExchange(snapshot, targetMaxConcurrentPartitionCount);
 
+        } catch (CosmosException cosmosException) {
+            logger.error(
+                "Can't identify partition count of target container '{}'.",
+                Configs.getCosmosContainerName());
+
+            throw new IllegalStateException(
+                "Can't identify partition count of target container '"
+                    + Configs.getCosmosContainerName()
+                    + "'.", cosmosException);
         }
     }
 
@@ -151,10 +168,52 @@ public final class Configs {
 
         CosmosDiagnosticsThresholds diagnosticsThreshold = new CosmosDiagnosticsThresholds()
             .setPointOperationLatencyThreshold(Duration.ofSeconds(1))
-            .setNonPointOperationLatencyThreshold(Duration.ofSeconds(2));
+            .setNonPointOperationLatencyThreshold(Duration.ofSeconds(2))
+            .setFailureHandler((statusCode, subStatusCode) -> {
+                if (statusCode < 400) {
+                    return false;
+                }
+
+                if (statusCode == 404 || statusCode == 409 || statusCode == 412) {
+                    return false;
+                }
+
+                if (statusCode == 429) {
+                    return false;
+                }
+
+                return true;
+            });
         CosmosClientTelemetryConfig telemetryConfig = new CosmosClientTelemetryConfig()
             .diagnosticsThresholds(diagnosticsThreshold)
             .diagnosticsHandler(CosmosDiagnosticsHandler.DEFAULT_LOGGING_HANDLER);
+
+        CosmosOperationPolicy operationPolicy = cosmosOperationDetails -> {
+            String resourceType = cosmosOperationDetails.getDiagnosticsContext().getResourceType();
+            if ("Document".equalsIgnoreCase(resourceType)) {
+
+                String operationType = cosmosOperationDetails.getDiagnosticsContext().getOperationType();
+                if ("Batch".equalsIgnoreCase(operationType)) {
+                    cosmosOperationDetails.setRequestOptions(
+                        new CosmosRequestOptions()
+                            .setCosmosEndToEndLatencyPolicyConfig(
+                                new CosmosEndToEndOperationLatencyPolicyConfigBuilder(Duration.ofSeconds(65))
+                                    .enable(true)
+                                    .build()
+                            )
+                    );
+                } else {
+                    cosmosOperationDetails.setRequestOptions(
+                        new CosmosRequestOptions()
+                            .setCosmosEndToEndLatencyPolicyConfig(
+                                new CosmosEndToEndOperationLatencyPolicyConfigBuilder(Duration.ofSeconds(10))
+                                    .enable(true)
+                                    .build()
+                            )
+                    );
+                }
+            }
+        };
 
         return new CosmosClientBuilder()
             .credential(credential)
@@ -163,7 +222,11 @@ public final class Configs {
             .contentResponseOnWriteEnabled(false)
             .userAgentSuffix(effectiveUserAgentSuffix)
             .consistencyLevel(ConsistencyLevel.EVENTUAL)
-            .clientTelemetryConfig(telemetryConfig);
+            .clientTelemetryConfig(telemetryConfig)
+            .addOperationPolicy(operationPolicy)
+            .throttlingRetryOptions(new ThrottlingRetryOptions()
+                .setMaxRetryAttemptsOnThrottledRequests(999_999)
+                .setMaxRetryWaitTime(Duration.ofSeconds(65)));
     }
 
     public static CosmosClient getCosmosClient(String userAgentSuffix) {
