@@ -92,6 +92,11 @@ public class Batch implements Runnable {
 
             logger.info("All items of batch {} scheduled.", this.identifier);
             writer.flush();
+        } catch (OwnershipLostException listException) {
+            logger.warn(
+                "Worker '{}' lost ownership of batch '{}' because another worker acquired it.",
+                Main.getMachineId(),
+                this.identifier);
         }
     }
 }

@@ -85,6 +85,42 @@ public class BlobStorage {
 
         throw new IllegalStateException("Can't access file '" + blobName + "'.");
     }
+
+    public static void purgeFromCache(String blobName) {
+        for (int i = 0; i < 10; i++) {
+            if (i > 0) {
+                logger.warn("RETRY {} to purge file {} from cache.", i, blobName);
+            }
+
+            try {
+                purgeFromCacheCore(blobName);
+                return;
+            } catch (Exception error) {
+                logger.error("FAILED to purge file {} from local cache.", blobName, error);
+            }
+        }
+
+        throw new IllegalStateException("Can't access file '" + blobName + "'.");
+    }
+
+    private static void purgeFromCacheCore(String blobName) {
+        File cacheFile = Path.of(localCacheDirectory, blobName).toFile();
+        String fileLock =
+            fileLocks.computeIfAbsent(cacheFile.getAbsolutePath(), fileName -> UUID.randomUUID().toString());
+
+        synchronized (fileLock) {
+            if (cacheFile.exists()) {
+
+                if (cacheFile.delete()) {
+                    logger.info(
+                        "Cached file {} deleted from local cache {}.",
+                        blobName,
+                        cacheFile.getAbsolutePath());
+                }
+            }
+        }
+    }
+
     public static List<InputFileInfo> searchWithWildcard(String searchPatternRegex) {
         Pattern pattern = Pattern.compile(searchPatternRegex);
 
@@ -111,6 +147,8 @@ public class BlobStorage {
                         );
                     } catch (IOException e) {
                         logger.error("Failed to read cached file '{}'", cachedFile, e);
+                    } finally {
+                        purgeFromCache(blobName);
                     }
                 } else {
                     logger.info(

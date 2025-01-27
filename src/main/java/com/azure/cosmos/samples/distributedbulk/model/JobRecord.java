@@ -7,23 +7,25 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-public class JobRecord extends StatusTracker {
+public class JobRecord {
     private final String id;
+    private final String pk;
 
-    @JsonProperty("_etag")
-    private final String etag;
+    private final List<String> inputFiles;
 
-    private final List<InputFileRecord> inputFiles;
+    @JsonProperty("recordType")
+    private final String recordType = "J";
 
     @JsonCreator
     public JobRecord(
         @JsonProperty("id") String id,
-        @JsonProperty("_etag") String etag,
-        @JsonProperty("inputFiles") List<InputFileRecord> inputFiles) {
+        @JsonProperty("pk") String partitionKeyValue,
+        @JsonProperty("inputFiles") List<String> inputFiles) {
 
         Objects.requireNonNull(id, "Argument 'id' must not be null.");
+        Objects.requireNonNull(partitionKeyValue, "Argument 'partitionKeyValue' must not be null.");
         this.id = id;
-        this.etag = etag;
+        this.pk = partitionKeyValue;
         this.inputFiles = inputFiles != null ? inputFiles : new ArrayList<>();
     }
 
@@ -31,9 +33,14 @@ public class JobRecord extends StatusTracker {
         return this.id;
     }
 
-    public String getEtag() { return this.etag; }
+    @JsonProperty("pk")
+    public String getPartitionKeyValue() {
+        return this.pk;
+    }
 
-    public List<InputFileRecord> getInputFiles() {
+    public List<String> getInputFiles() {
         return this.inputFiles;
     }
+
+    public String getRecordType() { return this.recordType; }
 }

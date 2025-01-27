@@ -1,14 +1,10 @@
 package com.azure.cosmos.samples.distributedbulk;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.util.Objects;
 import java.util.Random;
 
+import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.samples.distributedbulk.model.BatchRecord;
-import com.azure.cosmos.samples.distributedbulk.model.IngestionStatus;
-import com.azure.cosmos.samples.distributedbulk.model.InputFileRecord;
-import com.azure.cosmos.samples.distributedbulk.model.JobRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -85,77 +81,44 @@ public class BatchProcessor {
             currentBatch.run();
         }
 
-        private BatchRecordTuple findBatchProcessingCandidate(JobRecord job) {
-            for (InputFileRecord file : job.getInputFiles()) {
-                for (BatchRecord batch : file.getBatches()) {
-
-                    if (batch.getStatus() == IngestionStatus.COMPLETED) {
-                        continue;
-                    }
-
-                    // acquire ownership of batch if no other worker processes the batch yet
-                    // - or the worker previously acquired the batch has not updated it
-                    // for at least 5 minutes
-                    if (batch.getOwningWorker() == null
-                        || Duration.between(batch.getOwningWorkerLastModified(), Instant.now()).toMinutes() > 5) {
-
-                        batch.setOwningWorker(Main.getMachineId());
-                        batch.setOwningWorkerLastModified(Instant.now());
-
-                        return new BatchRecordTuple(job, file, batch);
-                    }
-                }
-            }
-
-            // No batch that can be acquired
-            return null;
+        private BatchRecord findBatchProcessingCandidate(String jobId) {
+            return  JobRepository.findBatchProcessingCandidate(jobId);
         }
 
         private Batch tryAcquireBatch() throws InterruptedException {
 
             while (true) {
-                JobRecord job = JobRepository.getJobRecord(this.jobId);
-                String etag = job.getEtag();
-                BatchRecordTuple candidate = this.findBatchProcessingCandidate(job);
+                BatchRecord candidate = this.findBatchProcessingCandidate(this.jobId);
 
                 if (candidate == null) {
                     // no batch to be processed and not acquired already
                     return null;
                 }
 
-                boolean success = JobRepository.tryUpdateJobRecord(
-                    this.jobId,
-                    job,
-                    etag);
-
-                if (success) {
+                try {
+                    BatchRecord acquiredBatchRecord = JobRepository.updateBatchRecord(candidate);
                     return new Batch(
-                        candidate.jobRecord.getId(),
+                        this.jobId,
                         Main.getMachineId(),
-                        candidate.inputFileRecord.getBlobName(),
-                        candidate.batchRecord.getIndex(),
-                        candidate.batchRecord.getOffset(),
-                        candidate.batchRecord.getRecordCount());
+                        acquiredBatchRecord.getId().split("\\|")[1],
+                        acquiredBatchRecord.getIndex(),
+                        acquiredBatchRecord.getOffset(),
+                        acquiredBatchRecord.getRecordCount());
+                } catch (CosmosException cosmosException) {
+                    if (cosmosException.getStatusCode() != 412) {
+                        throw cosmosException;
+                    }
+
+                    int delayInMs = 1000 + 100 * rnd.nextInt(50);
+
+                    logger.info(
+                        "Conflict when trying to acquire batch '{}', Retrying to acquire another batch in {} ms.",
+                        candidate.getId(),
+                        delayInMs);
+
+                    // Other worker modified job record - retry after short backoff
+                    Thread.sleep(delayInMs);
                 }
-
-                // Other worker modified job record - retry after short backoff
-                Thread.sleep(1000 + 100 * rnd.nextInt(50));
-            }
-        }
-
-        private static class BatchRecordTuple {
-            private final JobRecord jobRecord;
-            private final InputFileRecord inputFileRecord;
-            private final BatchRecord batchRecord;
-
-            public BatchRecordTuple(
-                JobRecord jobRecord,
-                InputFileRecord inputFileRecord,
-                BatchRecord batchRecord) {
-
-                this.jobRecord = jobRecord;
-                this.inputFileRecord = inputFileRecord;
-                this.batchRecord = batchRecord;
             }
         }
     }

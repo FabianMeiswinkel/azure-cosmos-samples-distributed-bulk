@@ -6,8 +6,9 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 
 import java.time.Instant;
+import java.util.Objects;
 
-public class BatchRecord extends StatusTracker {
+public class BatchRecord {
     @JsonSerialize(using = LongToStringSerializer.class)
     private final long offset;
 
@@ -23,12 +24,34 @@ public class BatchRecord extends StatusTracker {
     @JsonSerialize(using = TimeStampToStringSerializer.class)
     private Instant owningWorkerLastModified;
 
+    private final String id;
+
+    private final String pk;
+
+    @JsonProperty("_etag")
+    private String etag;
+
+    @JsonProperty("recordType")
+    private final String recordType = "B";
+
+    private IngestionStatus status;
+
+    @JsonDeserialize(using = StringToDoubleDeserializer.class)
+    @JsonSerialize(using = DoubleToStringSerializer.class)
+    private double estimatedProgress;
+
     @JsonCreator
     public BatchRecord(
+        @JsonProperty("id") String id,
+        @JsonProperty("pk") String partitionKeyValue,
         @JsonProperty("index") @JsonDeserialize(using = StringToIntegerDeserializer.class) Integer index,
         @JsonProperty("recordCount") @JsonDeserialize(using = StringToLongDeserializer.class) Long recordCount,
         @JsonProperty("offset") @JsonDeserialize(using = StringToLongDeserializer.class) Long offset) {
 
+        Objects.requireNonNull(id, "Argument 'id' must not be null.");
+        Objects.requireNonNull(partitionKeyValue, "Argument 'partitionKeyValue' must not be null.");
+        this.id = id;
+        this.pk = partitionKeyValue;
         this.recordCount = recordCount != null ? recordCount : 0L;
         this.index = index != null ? index : 0;
         this.offset = offset != null ? offset : 0L;
@@ -60,5 +83,38 @@ public class BatchRecord extends StatusTracker {
 
     public void setOwningWorkerLastModified(Instant value) {
         this.owningWorkerLastModified = value;
+    }
+
+    public String getId() {
+        return this.id;
+    }
+
+    @JsonProperty("pk")
+    public String getPartitionKeyValue() {
+        return this.pk;
+    }
+
+    public String getEtag() { return this.etag; }
+
+    public String getRecordType() { return this.recordType; }
+
+    public void setEtag(String newEtag) {
+        this.etag = newEtag;
+    }
+
+    public double getEstimatedProgress() {
+        return this.estimatedProgress;
+    }
+
+    public void setEstimatedProgress(double value) {
+        this.estimatedProgress = value;
+    }
+
+    public IngestionStatus getStatus() {
+        return this.status;
+    }
+
+    public void setStatus(IngestionStatus value) {
+        this.status = value != null ? value : IngestionStatus.NONE;
     }
 }

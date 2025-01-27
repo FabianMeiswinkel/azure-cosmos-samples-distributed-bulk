@@ -221,7 +221,7 @@ public final class Configs {
             .gatewayMode()
             .contentResponseOnWriteEnabled(false)
             .userAgentSuffix(effectiveUserAgentSuffix)
-            .consistencyLevel(ConsistencyLevel.EVENTUAL)
+            .consistencyLevel(ConsistencyLevel.SESSION)
             .clientTelemetryConfig(telemetryConfig)
             .addOperationPolicy(operationPolicy)
             .throttlingRetryOptions(new ThrottlingRetryOptions()

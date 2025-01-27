@@ -11,8 +11,6 @@ import com.azure.cosmos.models.CosmosItemOperation;
 import com.azure.cosmos.models.PartitionKey;
 import com.azure.cosmos.samples.distributedbulk.model.BatchRecord;
 import com.azure.cosmos.samples.distributedbulk.model.IngestionStatus;
-import com.azure.cosmos.samples.distributedbulk.model.InputFileRecord;
-import com.azure.cosmos.samples.distributedbulk.model.JobRecord;
 import com.azure.cosmos.samples.distributedbulk.model.WriteStrategy;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
@@ -50,8 +48,6 @@ class BulkWriter implements AutoCloseable {
     // concurrently - so, assuming one CPU per writer
     private final static int cpuCount = 1;
     private final static int maxPendingOperationCount = 1024 * 167 / cpuCount;
-
-    private final static int maxConcurrentPartitionCount = Configs.getMaxConcurrentPartitionCount();
 
     // make sure we keep reference to micro batch size calculation state for
     // entire lifetime of JVM
@@ -135,7 +131,7 @@ class BulkWriter implements AutoCloseable {
     private final Condition flushCompletedCondition = lock.newCondition();
 
     private final String jobId;
-    private String blobName;
+    private final String blobName;
     private final int index;
 
     public BulkWriter(String jobId, String blobName, int index, String identifier) {
@@ -164,26 +160,10 @@ class BulkWriter implements AutoCloseable {
         this.operationsCompleted = new AtomicLong(0);
         this.operationsScheduled = new AtomicLong(0);
         this.pendingOperations = ConcurrentHashMap.newKeySet();
-
-        CosmosBulkExecutionOptions options = new CosmosBulkExecutionOptions(bulkProcessingThresholds)
+        this.bulkOptions = new CosmosBulkExecutionOptions(bulkProcessingThresholds)
             .setInitialMicroBatchSize(Configs.getInitialMicroBatchSize())
             .setMaxMicroBatchSize(Configs.getMaxMicroBatchSize())
             .setMaxMicroBatchConcurrency(Configs.getMaxMicroBatchConcurrencyPerPartition());
-        /* CosmosBulkExecutionOptionsImpl optionsImpl = ImplementationBridgeHelpers
-            .CosmosBulkExecutionOptionsHelper
-            .getCosmosBulkExecutionOptionsAccessor()
-            .getImpl(options);
-
-        CosmosEndToEndOperationLatencyPolicyConfig e2eTimeoutPolicy =
-            new CosmosEndToEndOperationLatencyPolicyConfigBuilder(Duration.ofSeconds(65))
-                .enable(true)
-                .build();
-
-        optionsImpl.setMinTargetMicroBatchSize(1);
-        optionsImpl.setMaxConcurrentCosmosPartitions(maxConcurrentPartitionCount);
-        optionsImpl.setCosmosEndToEndLatencyPolicyConfig(e2eTimeoutPolicy); */
-
-        this.bulkOptions = options;
     }
 
     @Override
@@ -359,7 +339,7 @@ class BulkWriter implements AutoCloseable {
 
                     ingestionFlux.subscribe();
 
-                    this.statusTrackingScheduler.schedule(
+                    statusTrackingScheduler.schedule(
                         this::updateStatus,
                         50000 + rnd.nextInt(20000),
                         TimeUnit.MILLISECONDS);
@@ -475,13 +455,15 @@ class BulkWriter implements AutoCloseable {
     }
 
     private void updateStatusCore(boolean isLastUpdate) {
+
+        BatchRecord batch;
         try {
-            JobRecord job = JobRepository.getJobRecord(this.jobId);
-            if (job.getStatus() == IngestionStatus.COMPLETED) {
-                return;
+            batch = JobRepository.getBatch(this.jobId, this.blobName, this.index);
+            if (!this.identifier.equalsIgnoreCase(batch.getOwningWorker())
+                && batch.getStatus() != IngestionStatus.COMPLETED) {
+
+                throw new OwnershipLostException(this.jobId, this.blobName, this.index);
             }
-            InputFileRecord file = JobRepository.findFile(job, this.blobName);
-            BatchRecord batch = JobRepository.findBatch(file, this.index);
 
             batch.setOwningWorkerLastModified(Instant.now());
             batch.setOwningWorker(Main.getMachineId());
@@ -495,72 +477,13 @@ class BulkWriter implements AutoCloseable {
                     (double) this.operationsCompleted.get() / (double) batch.getRecordCount());
             }
 
-            double totalAvgProgress = 0;
-            boolean allCompleted = true;
-            for (BatchRecord b : file.getBatches()) {
-                totalAvgProgress += b.getEstimatedProgress();
-                if (b.getStatus() != IngestionStatus.COMPLETED) {
-                    allCompleted = false;
+            JobRepository.updateBatchRecord(batch);
+
+            if (isLastUpdate || batch.getStatus() == IngestionStatus.COMPLETED) {
+                if (!JobRepository.hasUnfinishedBatch(this.jobId, this.blobName)) {
+                    BlobStorage.purgeFromCache(this.blobName);
                 }
             }
-
-            if (allCompleted) {
-                file.setStatus(IngestionStatus.COMPLETED);
-                file.setEstimatedProgress(1d);
-            } else {
-                file.setStatus(IngestionStatus.STARTED);
-                file.setEstimatedProgress(
-                    totalAvgProgress / (double) file.getBatches().size());
-            }
-
-            totalAvgProgress = 0;
-            allCompleted = true;
-            for (InputFileRecord f : job.getInputFiles()) {
-                totalAvgProgress += f.getEstimatedProgress();
-                if (f.getStatus() != IngestionStatus.COMPLETED) {
-                    allCompleted = false;
-                }
-            }
-
-            if (allCompleted) {
-                job.setStatus(IngestionStatus.COMPLETED);
-                job.setEstimatedProgress(1d);
-            } else {
-                job.setStatus(IngestionStatus.STARTED);
-                job.setEstimatedProgress(
-                    totalAvgProgress / (double) job.getInputFiles().size());
-            }
-
-            if (JobRepository.tryUpdateJobRecord(this.jobId, job, job.getEtag())) {
-                if (!isLastUpdate) {
-                    int delayInMs = rnd.nextInt(50000 + rnd.nextInt(20000));
-                    logger.info(
-                        "Batch '{}' updated job status for jobId '{}'. Next update in {}ms.",
-                        this.identifier,
-                        this.jobId,
-                        delayInMs);
-
-                    statusTrackingScheduler.schedule(this::updateStatus, delayInMs, TimeUnit.MILLISECONDS);
-                } else {
-                    logger.info(
-                        "Batch '{}' updated job status for jobId '{}' last time.",
-                        this.identifier,
-                        this.jobId);
-                }
-            } else {
-                int delayInMs = rnd.nextInt(1000);
-                logger.info(
-                    "Conflict when batch '{}' tried to update job status for jobId '{}'. Retrying in {}ms.",
-                    this.identifier,
-                    this.jobId,
-                    delayInMs);
-
-                statusTrackingScheduler.schedule(
-                    isLastUpdate ? this::updateStatusLastTime : this::updateStatus,
-                    delayInMs,
-                    TimeUnit.MILLISECONDS);
-            }
-
         } catch (CosmosException cosmosException) {
             if (cosmosException.getStatusCode() == 412
                 || cosmosException.getStatusCode() == 429
@@ -568,7 +491,8 @@ class BulkWriter implements AutoCloseable {
 
                 int delayInMs = rnd.nextInt(1000);
                 logger.info(
-                    "Transient error updating status - retrying in {}ms...",
+                    "Transient error updating status for batch {} - retrying in {}ms...",
+                    this.identifier,
                     delayInMs,
                     cosmosException);
 
