@@ -3,11 +3,11 @@ E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\sa
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\model\StringToIntegerDeserializer.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\model\JobRecord.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\model\LongToStringSerializer.java
-E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\model\StatusTracker.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\CosmosDaemonThreadFactory.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\BulkWriter.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\JobRepository.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\InputFileInfo.java
+E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\OwnershipLostException.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\model\StringToTimeStampDeserializer.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\model\DoubleToStringSerializer.java
 E:\azure\azure-cosmos-samples-distributed-bulk\src\main\java\com\azure\cosmos\samples\distributedbulk\model\InputFileRecord.java

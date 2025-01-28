@@ -95,6 +95,14 @@ public class Main {
                 return;
             } else if (args.length == 2 && "monitor".equalsIgnoreCase(args[0])) {
                 JobId = args[1];
+            } else if (args.length == 2 && "delete".equalsIgnoreCase(args[0])) {
+                JobId = args[1];
+                int returnCode = deleteJob(args[1]);
+                if (returnCode != ErrorCodes.WAITING) {
+                    System.exit(returnCode);
+                }
+
+                return;
             } else if (args.length == 2 && "process".equalsIgnoreCase(args[0])) {
                 JobId = args[1];
                 int returnCode = processJob(args[1]);
@@ -131,6 +139,26 @@ public class Main {
 
         System.out.println("    process <JobID>");
         logger.error("    process <JobID>");
+
+        System.out.println("    delete <JobID>");
+        logger.error("    delete <JobID>");
+    }
+
+    private static int deleteJob(
+        String jobId) {
+
+        try {
+            JobRepository.deleteJob(jobId);
+
+            return ErrorCodes.SUCCESS;
+        } catch (Exception error) {
+            logger.error(
+                "Attempt to delete job with ID {} failed.",
+                jobId,
+                error);
+
+            return ErrorCodes.FAILED;
+        }
     }
 
     private static int createJob(

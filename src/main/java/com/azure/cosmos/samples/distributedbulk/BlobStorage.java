@@ -3,6 +3,7 @@ package com.azure.cosmos.samples.distributedbulk;
 import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
+import com.azure.storage.blob.models.BlobItem;
 import com.azure.storage.blob.models.BlobProperties;
 import com.azure.storage.blob.models.ListBlobsOptions;
 import org.slf4j.Logger;
@@ -18,7 +19,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class BlobStorage {
     private final static Logger logger = LoggerFactory.getLogger(BlobStorage.class);
@@ -126,37 +129,52 @@ public class BlobStorage {
 
         List<InputFileInfo> inputFiles = Collections.synchronizedList(new ArrayList<>());
 
-        inputClient
+        ForkJoinPool searchThreadPool = new ForkJoinPool(
+            Math.max(8, Runtime.getRuntime().availableProcessors())
+        );
+
+        List<BlobItem> blobItems = inputClient
             .listBlobs(new ListBlobsOptions(), null)
             .stream()
-            .parallel()
-            .forEach(blobItem -> {
-                String blobName = blobItem.getName();
-                if (pattern.matcher(blobName).matches()) {
-                    File cachedFile = ensureFile(blobName);
+            .collect(Collectors.toList());
 
-                    try {
-                        BufferedReader reader = new BufferedReader(
-                            new FileReader(cachedFile.getAbsolutePath()));
-                        long recordCount = reader.lines().count();
-                        long size = cachedFile.length();
-                        reader.close();
+        logger.info(
+            "Found {} items in blob container '{}'.",
+            blobItems.size(), "https://" + Configs.getBlobStorageAccountName() + ".blob.core.windows.net/");
 
-                        inputFiles.add(
-                            new InputFileInfo(blobName, size, recordCount)
-                        );
-                    } catch (IOException e) {
-                        logger.error("Failed to read cached file '{}'", cachedFile, e);
-                    } finally {
-                        purgeFromCache(blobName);
+        searchThreadPool.submit(() ->
+            blobItems
+                .stream()
+                .parallel()
+                .forEach(blobItem -> {
+                    String blobName = blobItem.getName();
+                    if (pattern.matcher(blobName).matches()) {
+                        File cachedFile = ensureFile(blobName);
+
+                        try {
+                            BufferedReader reader = new BufferedReader(
+                                new FileReader(cachedFile.getAbsolutePath()));
+                            long recordCount = reader.lines().count();
+                            long size = cachedFile.length();
+                            reader.close();
+
+                            inputFiles.add(
+                                new InputFileInfo(blobName, size, recordCount)
+                            );
+                        } catch (IOException e) {
+                            logger.error("Failed to read cached file '{}'", cachedFile, e);
+                        } finally {
+                            purgeFromCache(blobName);
+                        }
+                    } else {
+                        logger.info(
+                            "Skipping file '{}' because it does not match search pattern regex {}",
+                            blobItem.getName(),
+                            searchPatternRegex);
                     }
-                } else {
-                    logger.info(
-                        "Skipping file '{}' because it does not match search pattern regex {}",
-                        blobItem.getName(),
-                        searchPatternRegex);
-                }
-            });
+                })).join();
+
+        searchThreadPool.shutdown();
 
         if (inputFiles.size() == 0) {
             throw new IllegalStateException(

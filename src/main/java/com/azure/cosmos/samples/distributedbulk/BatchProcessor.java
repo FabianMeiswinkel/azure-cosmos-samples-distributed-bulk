@@ -1,5 +1,6 @@
 package com.azure.cosmos.samples.distributedbulk;
 
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Random;
 
@@ -47,9 +48,10 @@ public class BatchProcessor {
         public void run() {
             while(true) {
                 try {
-                    runCore();
-
-                    return;
+                    if (runCore()) {
+                        // All batches completed
+                        return;
+                    }
                 } catch (Exception error) {
                     logger.error(
                         "BulkProcessor thread {} of Job {} failed. Retrying in 1 minute...",
@@ -70,23 +72,24 @@ public class BatchProcessor {
             }
         }
 
-        private void runCore() throws InterruptedException {
+        private boolean runCore() throws InterruptedException {
             Batch currentBatch = tryAcquireBatch();
             if (currentBatch == null) {
                 logger.info("No incomplete batch could be acquired anymore. Retrying in 1 minute...");
                 Thread.sleep(60_000);
-                return;
+
+                return !JobRepository.hasUnfinishedBatch(jobId);
             }
 
             currentBatch.run();
+            return !JobRepository.hasUnfinishedBatch(jobId);
         }
 
         private BatchRecord findBatchProcessingCandidate(String jobId) {
-            return  JobRepository.findBatchProcessingCandidate(jobId);
+            return  JobRepository.findBatchProcessingCandidate(this.threadId, jobId);
         }
 
         private Batch tryAcquireBatch() throws InterruptedException {
-
             while (true) {
                 BatchRecord candidate = this.findBatchProcessingCandidate(this.jobId);
 
@@ -94,6 +97,9 @@ public class BatchProcessor {
                     // no batch to be processed and not acquired already
                     return null;
                 }
+
+                candidate.setOwningWorker(Main.getMachineId());
+                candidate.setOwningWorkerLastModified(Instant.now());
 
                 try {
                     BatchRecord acquiredBatchRecord = JobRepository.updateBatchRecord(candidate);

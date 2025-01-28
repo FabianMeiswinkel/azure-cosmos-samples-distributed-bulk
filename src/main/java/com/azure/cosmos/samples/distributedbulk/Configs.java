@@ -169,6 +169,7 @@ public final class Configs {
         CosmosDiagnosticsThresholds diagnosticsThreshold = new CosmosDiagnosticsThresholds()
             .setPointOperationLatencyThreshold(Duration.ofSeconds(1))
             .setNonPointOperationLatencyThreshold(Duration.ofSeconds(2))
+            .setRequestChargeThreshold(2000)
             .setFailureHandler((statusCode, subStatusCode) -> {
                 if (statusCode < 400) {
                     return false;

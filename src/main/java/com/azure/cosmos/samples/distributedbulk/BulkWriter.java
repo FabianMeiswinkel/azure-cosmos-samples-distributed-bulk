@@ -459,7 +459,7 @@ class BulkWriter implements AutoCloseable {
         BatchRecord batch;
         try {
             batch = JobRepository.getBatch(this.jobId, this.blobName, this.index);
-            if (!this.identifier.equalsIgnoreCase(batch.getOwningWorker())
+            if (!Main.getMachineId().equalsIgnoreCase(batch.getOwningWorker())
                 && batch.getStatus() != IngestionStatus.COMPLETED) {
 
                 throw new OwnershipLostException(this.jobId, this.blobName, this.index);
