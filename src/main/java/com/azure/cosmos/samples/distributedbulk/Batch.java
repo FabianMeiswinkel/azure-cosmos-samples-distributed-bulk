@@ -1,7 +1,11 @@
 package com.azure.cosmos.samples.distributedbulk;
 
+import com.azure.cosmos.CosmosAsyncContainer;
+import com.azure.cosmos.CosmosException;
+import com.azure.cosmos.samples.distributedbulk.model.BatchRecord;
+import com.azure.cosmos.samples.distributedbulk.model.IngestionStatus;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,13 +14,34 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
-import java.util.List;
+import java.time.Instant;
 import java.util.Objects;
-import java.util.stream.Collectors;
+import java.util.Random;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 public class Batch implements Runnable {
+    private static final CosmosAsyncContainer container = Configs
+        .getCosmosAsyncClient(Main.JobId + "_Batch")
+        .getDatabase(Configs.getCosmosDatabaseName())
+        .getContainer(Configs.getCosmosContainerName());
+
+    private static final DocumentBulkExecutor<ObjectNode> bulkExecutor = new DocumentBulkExecutor<>(
+        container,
+        (objectNode) -> objectNode.get("id").asText()
+    );
     private final static Logger logger = LoggerFactory.getLogger(Batch.class);
-    private final static ObjectMapper mapper = new ObjectMapper();
+
+    private final static Random rnd = new Random();
+
+    private final static String  BULK_WRITER_RETRY_DELAY_SCHEDULING_THREAD_NAME
+        = "batchStatusUpd-";
+    private final static ScheduledExecutorService statusTrackingScheduler = Executors.newScheduledThreadPool(
+        1,
+        new CosmosDaemonThreadFactory(BULK_WRITER_RETRY_DELAY_SCHEDULING_THREAD_NAME));
 
     private final String blobName;
 
@@ -24,11 +49,11 @@ public class Batch implements Runnable {
 
     private final long recordCount;
 
-    private final String identifier;
-
     private final String jobId;
 
     private final int index;
+
+    private final DocumentBulkExecutorOperationStatus status;
 
     public Batch(
         String jobId,
@@ -47,56 +72,139 @@ public class Batch implements Runnable {
         this.offset = offset;
         this.index = index;
         this.recordCount = recordCount;
-        this.identifier = "Batch_" + blobName + "_" + index;
+        this.status = new DocumentBulkExecutorOperationStatus("Batch_" + blobName + "_" + index);
     }
 
 
     @Override
     public void run() {
-        List<String> lines;
         File cachedFile = BlobStorage.ensureFile(this.blobName);
+        BufferedReader reader = null;
         try {
-            BufferedReader reader = new BufferedReader(new FileReader(cachedFile.getAbsolutePath()));
-            lines = reader
+            reader = new BufferedReader(new FileReader(cachedFile.getAbsolutePath()));
+            final AtomicLong lineIndex = new AtomicLong(this.offset);
+            Stream<ObjectNode> docs = reader
                 .lines()
                 .skip(this.offset)
                 .limit(this.recordCount)
-                .collect(Collectors.toList());
-            reader.close();
+                .map(line -> {
+                    try {
+                        lineIndex.incrementAndGet();
+                        return (ObjectNode) Configs.mapper.readTree(line);
+                    } catch (JsonProcessingException e) {
+                        throw new IllegalStateException(
+                            "Failed parse json of line " + lineIndex.get() + " of file  '"
+                                + cachedFile + "' - JSON ['"
+                                + line + "']",
+                            e);
+                    }
+                })
+                .filter(doc -> {
+                    JsonNode opNode = doc.get("opType");
+                    return opNode == null || "U".equalsIgnoreCase(opNode.asText());
+                })
+                .onClose(() -> logger.info("All items of batch {} scheduled.", this.status.getOperationId()));
+
+            statusTrackingScheduler.schedule(
+                this::updateStatus,
+                50000 + rnd.nextInt(20000),
+                TimeUnit.MILLISECONDS);
+
+            bulkExecutor.upsertAll(
+                docs,
+                this.status);
         } catch (IOException e) {
             logger.error("Failed to read cached file '{}'", cachedFile, e);
             throw new IllegalStateException(
                 "Failed to read cached file '" + cachedFile + "',",
                 e);
-        }
-
-        long lineIndex = offset;
-        try (BulkWriter writer = new BulkWriter(this.jobId, this.blobName, this.index, this.identifier)) {
-
-            for (String line : lines) {
-                ObjectNode doc;
-                try {
-                    doc = (ObjectNode) mapper.readTree(line);
-                } catch (JsonProcessingException e) {
-                    throw new IllegalStateException(
-                        "Failed parse json of line " + lineIndex + " of file  '"
-                            + cachedFile + "' - JSON ['"
-                            + line + "']",
-                        e);
-                }
-
-                writer.scheduleWrite(doc, lineIndex);
-
-                lineIndex++;
-            }
-
-            logger.info("All items of batch {} scheduled.", this.identifier);
-            writer.flush();
         } catch (OwnershipLostException listException) {
             logger.warn(
                 "Worker '{}' lost ownership of batch '{}' because another worker acquired it.",
                 Main.getMachineId(),
-                this.identifier);
+                this.status.getOperationId());
+        } finally {
+            this.updateStatusLastTime();
+            if (reader != null) {
+
+                try {
+                    reader.close();
+                } catch (IOException e) {
+                    logger.warn("Failed closing buffered reader of cached file for batch {}",
+                        this.status.getOperationId());
+                }
+            }
+        }
+
+    }
+
+    private void updateStatusCore(boolean isLastUpdate) {
+
+        BatchRecord batch;
+        try {
+            batch = JobRepository.getBatch(this.jobId, this.blobName, this.index);
+            if (!Main.getMachineId().equalsIgnoreCase(batch.getOwningWorker())
+                && batch.getStatus() != IngestionStatus.COMPLETED) {
+
+                throw new OwnershipLostException(this.jobId, this.blobName, this.index);
+            }
+
+            batch.setOwningWorkerLastModified(Instant.now());
+            batch.setOwningWorker(Main.getMachineId());
+            if (batch.getRecordCount() == 0 || batch.getStatus() == IngestionStatus.COMPLETED
+                || (this.status.getFlushCalled().get() && this.status.getOperationsScheduled().get() == 0)) {
+                batch.setStatus(IngestionStatus.COMPLETED);
+                batch.setEstimatedProgress(1d);
+            } else {
+                batch.setStatus(IngestionStatus.STARTED);
+                batch.setEstimatedProgress(
+                    (double) this.status.getOperationsCompleted().get() / (double) batch.getRecordCount());
+            }
+
+            JobRepository.updateBatchRecord(batch);
+
+            if (isLastUpdate || batch.getStatus() == IngestionStatus.COMPLETED) {
+                if (!JobRepository.hasUnfinishedBatch(this.jobId, this.blobName)) {
+                    BlobStorage.purgeFromCache(this.blobName);
+                }
+            }
+        } catch (CosmosException cosmosException) {
+            if (cosmosException.getStatusCode() == 412
+                || cosmosException.getStatusCode() == 429
+                || cosmosException.getStatusCode() == 449) {
+
+                int delayInMs = rnd.nextInt(1000);
+                logger.info(
+                    "Transient error updating status for batch {} - retrying in {}ms...",
+                    this.status.getOperationId(),
+                    delayInMs,
+                    cosmosException);
+
+                statusTrackingScheduler.schedule(
+                    isLastUpdate ? this::updateStatusLastTime : this::updateStatus,
+                    delayInMs,
+                    TimeUnit.MILLISECONDS);
+            }
+        }
+    }
+
+    private void updateStatus() {
+        try {
+            this.updateStatusCore(false);
+        } catch (Exception error) {
+            logger.error(
+                "Unhandled exception trying to update status. Ignoring this optimistically.",
+                error);
+        }
+    }
+
+    private void updateStatusLastTime() {
+        try {
+            this.updateStatusCore(true);
+        } catch (Exception error) {
+            logger.error(
+                "Unhandled exception trying to update status. Ignoring this optimistically.",
+                error);
         }
     }
 }

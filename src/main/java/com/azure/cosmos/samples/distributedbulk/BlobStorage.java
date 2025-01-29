@@ -14,6 +14,8 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -43,7 +45,7 @@ public class BlobStorage {
 
         synchronized (fileLock) {
             if (cacheFile.exists()) {
-                logger.info(
+                logger.debug(
                     "Copy of file {} already exists in local cache {}.",
                     blobName,
                     cacheFile.getAbsolutePath());
@@ -57,17 +59,19 @@ public class BlobStorage {
             }
 
             BlobClient blobClient = inputClient.getBlobClient(blobName);
-            logger.info(
+            logger.debug(
                 "Downloading file {} from Azure Blob Storage {}...",
                 cacheFile.getAbsolutePath(),
                 blobClient.getBlobUrl());
+            Instant start = Instant.now();
             BlobProperties blob = blobClient.downloadToFile(cacheFile.getAbsolutePath(), false);
             logger.info(
-                "Downloaded file {} from Azure Blob Storage {} with {} bytes successfully to local cache {}.",
+                "Downloaded file {} from Azure Blob Storage {} with {} bytes successfully to local cache {} in {}ms.",
                 cacheFile.getAbsolutePath(),
                 blobClient.getBlobUrl(),
                 blob.getBlobSize(),
-                cacheFile.getAbsolutePath());
+                cacheFile.getAbsolutePath(),
+                Duration.between(start, Instant.now()).toMillis());
 
             return cacheFile;
         }
@@ -113,7 +117,6 @@ public class BlobStorage {
 
         synchronized (fileLock) {
             if (cacheFile.exists()) {
-
                 if (cacheFile.delete()) {
                     logger.info(
                         "Cached file {} deleted from local cache {}.",
@@ -167,7 +170,7 @@ public class BlobStorage {
                             purgeFromCache(blobName);
                         }
                     } else {
-                        logger.info(
+                        logger.debug(
                             "Skipping file '{}' because it does not match search pattern regex {}",
                             blobItem.getName(),
                             searchPatternRegex);

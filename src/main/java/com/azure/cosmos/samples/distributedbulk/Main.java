@@ -1,6 +1,5 @@
 package com.azure.cosmos.samples.distributedbulk;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,17 +49,16 @@ public class Main {
             conn.disconnect();
 
             // Parse the VM metdata to extract the VMId
-            ObjectMapper mapper = new ObjectMapper();
-            ObjectNode parsedVmMetadata = (ObjectNode) mapper.readTree(content.toString());
+            ObjectNode parsedVmMetadata = (ObjectNode) Configs.mapper.readTree(content.toString());
 
             prefix = parsedVmMetadata.get("compute").get("name").asText() + "_";
             String vmId = parsedVmMetadata.get("compute").get("vmId").asText();
 
             if (suffix.length() > 0) {
-                return prefix + "vmId-" + vmId + "_" + suffix + "_";
+                return prefix + "vmId-" + vmId + "_" + suffix;
             }
 
-            return prefix + "vmId-" + vmId + "_";
+            return prefix + "vmId-" + vmId;
 
         } catch (Exception e) {
             String uuid = UUID.randomUUID().toString();

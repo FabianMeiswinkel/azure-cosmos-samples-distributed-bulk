@@ -15,7 +15,6 @@ import com.azure.cosmos.samples.distributedbulk.model.InputFileRecord;
 import com.azure.cosmos.samples.distributedbulk.model.JobRecord;
 import com.azure.cosmos.util.CosmosPagedFlux;
 import com.azure.cosmos.util.CosmosPagedIterable;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,19 +67,6 @@ public class JobRepository {
         }
     }
 
-    public static JobRecord getJobRecord(String jobId) {
-        JobRecord jobRecord = jobContainer.readItem(
-                jobId,
-                new PartitionKey(jobId),
-                JobRecord.class).block().getItem();
-
-        for (String file : jobRecord.getInputFiles()) {
-            BlobStorage.purgeFromCache(file);
-        }
-
-        return jobRecord;
-    }
-
     public synchronized static BatchRecord findBatchProcessingCandidate(int threadId, String jobId) {
         long ownerShipExpiration = Instant.now().minus(5, ChronoUnit.MINUTES).toEpochMilli();
         CosmosQueryRequestOptions queryOptions = new CosmosQueryRequestOptions()
@@ -94,11 +80,12 @@ public class JobRepository {
         parameters.add(new SqlParameter("@OwnershipExpiration", ownerShipExpiration));
 
         SqlQuerySpec query = new SqlQuerySpec()
-            .setQueryText("SELECT * FROM c WHERE c.recordType = \"B\" AND c.status != @CompletedStatus AND (c.owningWorkerLastModified < @OwnershipExpiration OR IS_NULL(c.owningWorker) OR c.owningWorker=\"\")")
-
+            .setQueryText("SELECT * FROM c WHERE c.recordType = \"B\" AND c.status != @CompletedStatus AND"
+                + "(c.owningWorkerLastModified < @OwnershipExpiration OR IS_NULL(c.owningWorker) "
+                + "OR c.owningWorker=\"\")")
             .setParameters(parameters);
 
-        logger.info("Executing query {} - {} - {}: {}, {}: {}",
+        logger.debug("Executing query {} - {} - {}: {}, {}: {}",
             "FindBatchCandidate",
             query.getQueryText(),
             parameters.get(0).getName(),
@@ -120,7 +107,7 @@ public class JobRepository {
 
         if (candidatesIterator.hasNext()) {
             BatchRecord record = candidatesIterator.next();
-            logger.info("Batch processor '{}' on machine '{}' found candidate '{}'.",
+            logger.debug("Batch processor '{}' on machine '{}' found candidate '{}'.",
                 threadId,
                 Main.getMachineId(),
                 record.getId());
@@ -155,7 +142,7 @@ public class JobRepository {
         SqlQuerySpec query = new SqlQuerySpec()
             .setQueryText("SELECT c.id FROM c WHERE c.recordType = \"B\" AND c.status != @CompletedStatus AND STARTSWITH(c.id, @IdPrefix)")
             .setParameters(parameters);
-        logger.info("Executing query {} - {} - {}: {}, {}: {}",
+        logger.debug("Executing query {} - {} - {}: {}, {}: {}",
             "FindUnfinishedBatch",
             query.getQueryText(),
             parameters.get(0).getName(),
@@ -177,11 +164,17 @@ public class JobRepository {
 
         boolean hasNext = candidatesIterator.hasNext();
 
-        logger.info("Machine '{}' checked whether any batch with prefix '{}' for job '{}' has not finished yet - {}.",
-            Main.getMachineId(),
-            prefix,
-            jobId,
-            hasNext);
+        if (hasNext) {
+            logger.debug("Machine '{}' found some unfinished batch with prefix '{}' for job '{}'.",
+                Main.getMachineId(),
+                prefix,
+                jobId);
+        } else {
+            logger.info("Machine '{}' could not find any unfinished batch with prefix '{}' for job '{}'",
+                Main.getMachineId(),
+                prefix,
+                jobId);
+        }
 
         return hasNext;
     }
@@ -195,7 +188,7 @@ public class JobRepository {
 
         SqlQuerySpec query = new SqlQuerySpec()
             .setQueryText("SELECT VALUE c.id FROM c");
-        logger.info("Executing query {} - {}",
+        logger.debug("Executing query {} - {}",
             "DeleteJobQuery",
             query.getQueryText());
         CosmosPagedFlux<String> batchPagedFlux = jobContainer.queryItems(

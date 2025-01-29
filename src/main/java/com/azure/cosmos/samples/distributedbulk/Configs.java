@@ -11,11 +11,13 @@ import com.azure.cosmos.CosmosDiagnosticsThresholds;
 import com.azure.cosmos.CosmosEndToEndOperationLatencyPolicyConfigBuilder;
 import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.CosmosOperationPolicy;
+import com.azure.cosmos.GatewayConnectionConfig;
 import com.azure.cosmos.ThrottlingRetryOptions;
 import com.azure.cosmos.models.CosmosClientTelemetryConfig;
 import com.azure.cosmos.models.CosmosRequestOptions;
 import com.azure.cosmos.samples.distributedbulk.model.WriteStrategy;
 import com.azure.identity.DefaultAzureCredentialBuilder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 public final class Configs {
+    final static ObjectMapper mapper = new ObjectMapper();
     private static final Logger logger = LoggerFactory.getLogger(Configs.class);
     private static final TokenCredential credential = new DefaultAzureCredentialBuilder()
         .managedIdentityClientId(Configs.getAadManagedIdentityId())
@@ -179,11 +182,7 @@ public final class Configs {
                     return false;
                 }
 
-                if (statusCode == 429) {
-                    return false;
-                }
-
-                return true;
+                return statusCode != 429;
             });
         CosmosClientTelemetryConfig telemetryConfig = new CosmosClientTelemetryConfig()
             .diagnosticsThresholds(diagnosticsThreshold)
@@ -216,10 +215,14 @@ public final class Configs {
             }
         };
 
+        GatewayConnectionConfig gwConfig = new GatewayConnectionConfig()
+            .setIdleConnectionTimeout(Duration.ofSeconds(60))
+            .setMaxConnectionPoolSize(10000);
+
         return new CosmosClientBuilder()
             .credential(credential)
             .endpoint(getAccountEndpoint())
-            .gatewayMode()
+            .gatewayMode(gwConfig)
             .contentResponseOnWriteEnabled(false)
             .userAgentSuffix(effectiveUserAgentSuffix)
             .consistencyLevel(ConsistencyLevel.SESSION)

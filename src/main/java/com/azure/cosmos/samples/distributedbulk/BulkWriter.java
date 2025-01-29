@@ -1,6 +1,5 @@
 package com.azure.cosmos.samples.distributedbulk;
 
-import com.azure.cosmos.CosmosAsyncClient;
 import com.azure.cosmos.CosmosAsyncContainer;
 import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.models.CosmosBulkExecutionOptions;
@@ -8,11 +7,9 @@ import com.azure.cosmos.models.CosmosBulkExecutionThresholdsState;
 import com.azure.cosmos.models.CosmosBulkItemResponse;
 import com.azure.cosmos.models.CosmosBulkOperations;
 import com.azure.cosmos.models.CosmosItemOperation;
+import com.azure.cosmos.models.CosmosItemOperationType;
 import com.azure.cosmos.models.PartitionKey;
-import com.azure.cosmos.samples.distributedbulk.model.BatchRecord;
-import com.azure.cosmos.samples.distributedbulk.model.IngestionStatus;
-import com.azure.cosmos.samples.distributedbulk.model.WriteStrategy;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
@@ -26,20 +23,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
-import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.stream.Collectors;
 
 class BulkWriter implements AutoCloseable {
     private static final Logger logger = LoggerFactory.getLogger(BulkWriter.class);
@@ -83,9 +74,7 @@ class BulkWriter implements AutoCloseable {
         1,
         new CosmosDaemonThreadFactory(BULK_WRITER_RETRY_DELAY_SCHEDULING_THREAD_NAME));
 
-    private final static ScheduledExecutorService statusTrackingScheduler = Executors.newScheduledThreadPool(
-        1,
-        new CosmosDaemonThreadFactory(BULK_WRITER_RETRY_DELAY_SCHEDULING_THREAD_NAME));
+
 
     private final Sinks.Many<CosmosItemOperation> bulkInputEmitter =
         Sinks.many().unicast().onBackpressureBuffer();
@@ -115,51 +104,26 @@ class BulkWriter implements AutoCloseable {
         };
 
     private final CosmosAsyncContainer cosmosAsyncContainer;
-    private final CosmosAsyncClient cosmosAsyncClient;
-    private final AtomicLong operationsScheduled;
-    private final AtomicLong operationsCompleted;
-    private final Set<String> pendingOperations;
-    private final String lockObject;
 
     private final String identifier;
-
-    private final AtomicBoolean flushCalled = new AtomicBoolean(false);
 
     private final CosmosBulkExecutionOptions bulkOptions;
 
     private final Lock lock = new ReentrantLock();
     private final Condition flushCompletedCondition = lock.newCondition();
 
-    private final String jobId;
-    private final String blobName;
-    private final int index;
+    private final DocumentBulkExecutorOperationStatus status;
 
-    public BulkWriter(String jobId, String blobName, int index, String identifier) {
+    public BulkWriter(
+        CosmosAsyncContainer cosmosAsyncContainer,
+        DocumentBulkExecutorOperationStatus status) {
 
-        Objects.requireNonNull(
-            jobId,
-            "Argument 'jobId' must not be null.");
+        Objects.requireNonNull(cosmosAsyncContainer, "Argument 'cosmosAsyncContainer' must not be null.");
+        Objects.requireNonNull(status, "Argument 'status' must not be null.");
 
-        Objects.requireNonNull(
-            identifier,
-            "Argument 'identifier' must not be null.");
-
-        Objects.requireNonNull(
-            blobName,
-            "Argument 'blobName' must not be null.");
-
-        this.jobId = jobId;
-        this.blobName = blobName;
-        this.index = index;
-        this.cosmosAsyncClient = Configs.getCosmosAsyncClient(identifier);
-        this.cosmosAsyncContainer = this.cosmosAsyncClient
-            .getDatabase(Configs.getCosmosDatabaseName())
-            .getContainer(Configs.getCosmosContainerName());
-        this.lockObject = UUID.randomUUID().toString();
-        this.identifier = identifier;
-        this.operationsCompleted = new AtomicLong(0);
-        this.operationsScheduled = new AtomicLong(0);
-        this.pendingOperations = ConcurrentHashMap.newKeySet();
+        this.cosmosAsyncContainer = cosmosAsyncContainer;
+        this.identifier = status.getOperationId();
+        this.status = status;
         this.bulkOptions = new CosmosBulkExecutionOptions(bulkProcessingThresholds)
             .setInitialMicroBatchSize(Configs.getInitialMicroBatchSize())
             .setMaxMicroBatchSize(Configs.getMaxMicroBatchSize())
@@ -180,19 +144,10 @@ class BulkWriter implements AutoCloseable {
                 t);
         }
 
-        logger.info(
+        logger.debug(
             "Closed input emitter for batch [{}}] - {}.",
             this.identifier,
             result.name());
-
-        try {
-            this.cosmosAsyncClient.close();
-        } catch (Throwable t) {
-            logger.info(
-                "Failed to close cosmos client for batch [{}}].",
-                this.identifier,
-                t);
-        }
 
         try {
             this.bulkWriterInputBoundedElastic.disposeGracefully();
@@ -212,40 +167,7 @@ class BulkWriter implements AutoCloseable {
                 t);
         }
 
-        this.pendingOperations.clear();
-    }
-
-    public void scheduleWrite(ObjectNode doc, long offset) {
-        if (this.flushCalled.get()) {
-            throw new IllegalStateException("No more writes can be scheduled after calling flush.");
-        }
-
-        Objects.requireNonNull(doc, "Argument 'doc' must not be null.");
-        Objects.requireNonNull(doc.get("id"), "Argument 'doc' must have a non-null 'id' property.");
-
-        String id = doc.get("id").asText();
-
-        OperationContext ctx = new OperationContext(id, this.identifier, offset);
-
-        CosmosItemOperation itemOperation;
-
-        if (Configs.getWriteStrategy() == WriteStrategy.UPSERT) {
-            itemOperation = CosmosBulkOperations.getUpsertItemOperation(
-                doc,
-                new PartitionKey(id),
-                null,
-                ctx
-            );
-        } else {
-            itemOperation = CosmosBulkOperations.getCreateItemOperation(
-                doc,
-                new PartitionKey(id),
-                null,
-                ctx
-            );
-        }
-
-        this.scheduleWrite(itemOperation);
+        this.status.clearPendingOperations();
     }
 
     private void scheduleRetry(
@@ -256,31 +178,47 @@ class BulkWriter implements AutoCloseable {
         OperationContext originalCtx = cosmosItemOperation.getContext();
         int retryCount = originalCtx.getRetryCount();
         if (retryCount > Configs.getMaxRetryCount()) {
-            throw new IllegalStateException(
-                "Bulk ingestion of item Batch ["
-                    + this.identifier
-                    + "], Line [" + originalCtx.getOffset()
-                    + "], ID [" + originalCtx.getId()
-                    + "], PK [" + cosmosItemOperation.getPartitionKeyValue()
-                    + "] failed [" + retryCount
-                    + "] times. No more retries - aborting the ingestion job.", cause);
+            logger.error("Bulk ingestion of item Batch [{}], ID [{}], PK [{}] failed [{}] times. "
+                + "No more retries - aborting the ingestion job.",
+                this.identifier,
+                originalCtx.getId(),
+                cosmosItemOperation.getPartitionKeyValue(),
+                retryCount,
+                cause);
+
+            this.status.addFailure(
+                null,
+                createFailure(cosmosItemOperation, cause));
+
+            return;
         }
 
         CosmosItemOperation newOperation;
-        if (Configs.getWriteStrategy() == WriteStrategy.UPSERT) {
+        if (cosmosItemOperation.getOperationType() == CosmosItemOperationType.UPSERT) {
             newOperation = CosmosBulkOperations.
                 getUpsertItemOperation(
                     cosmosItemOperation.getItem(),
                     new PartitionKey(originalCtx.getId()),
                     null,
                     originalCtx.createForRetry());
-        } else {
+        } else if (cosmosItemOperation.getOperationType() == CosmosItemOperationType.CREATE) {
             newOperation = CosmosBulkOperations.
                 getCreateItemOperation(
                     cosmosItemOperation.getItem(),
                     new PartitionKey(originalCtx.getId()),
                     null,
                     originalCtx.createForRetry());
+        } else if (cosmosItemOperation.getOperationType() == CosmosItemOperationType.DELETE) {
+            newOperation = CosmosBulkOperations.
+                getDeleteItemOperation(
+                    cosmosItemOperation.getItem(),
+                    new PartitionKey(originalCtx.getId()),
+                    null,
+                    originalCtx.createForRetry());
+        } else {
+            throw new IllegalStateException("Unsupported operation type '"
+                + cosmosItemOperation.getOperationType()
+                + "'.");
         }
 
         if (retryCount > 0 || retryAfterDuration != null) {
@@ -289,9 +227,8 @@ class BulkWriter implements AutoCloseable {
                 10 * retryCount + rnd.nextInt( 990 * retryCount),
                 retryAfterDuration != null ? Math.min((int)retryAfterDuration.toMillis(), 5000) : 0);
             logger.warn(
-                "Item Batch {}, Line {}, Id {} failed already {} times. Retrying again in {}ms.",
+                "Item Batch {}, Id {} failed already {} times. Retrying again in {}ms.",
                 originalCtx.getIdentifier(),
-                originalCtx.getOffset(),
                 originalCtx.getId(),
                 originalCtx.getRetryCount(),
                 delayInMs);
@@ -305,7 +242,12 @@ class BulkWriter implements AutoCloseable {
         }
     }
 
-    private void scheduleWrite(CosmosItemOperation cosmosItemOperation) {
+    public void scheduleWrite(CosmosItemOperation cosmosItemOperation) {
+        if (this.status.getFlushCalled().get()) {
+            throw new IllegalStateException("No more writes can be scheduled after calling flush.");
+        }
+
+        Objects.requireNonNull(cosmosItemOperation, "Argument 'cosmosItemOperation' must not be null.");
 
         boolean acquired = false;
         while(!acquired) {
@@ -338,11 +280,6 @@ class BulkWriter implements AutoCloseable {
                     }
 
                     ingestionFlux.subscribe();
-
-                    statusTrackingScheduler.schedule(
-                        this::updateStatus,
-                        50000 + rnd.nextInt(20000),
-                        TimeUnit.MILLISECONDS);
                 }
             }
         }
@@ -354,10 +291,10 @@ class BulkWriter implements AutoCloseable {
             bulkInputEmitter.emitNext(cosmosItemOperation, emitFailureHandler);
         } else {
             OperationContext ctx = cosmosItemOperation.getContext();
-            synchronized (this.lockObject) {
+            synchronized (this.status.getLockObject()) {
                 bulkInputEmitter.emitNext(cosmosItemOperation, emitFailureHandler);
-                this.operationsScheduled.incrementAndGet();
-                this.pendingOperations.add(ctx.getId());
+                this.status.getOperationsScheduled().incrementAndGet();
+                this.status.getPendingOperations().add(ctx.getId());
                 this.ensureIngestionStarted();
             }
         }
@@ -365,8 +302,8 @@ class BulkWriter implements AutoCloseable {
 
     public void flush() {
         Flux<Object> ingestionFluxSnapshot;
-        synchronized (this.lockObject) {
-            this.flushCalled.set(true);
+        synchronized (this.status.getLockObject()) {
+            this.status.getFlushCalled().set(true);
 
             ingestionFluxSnapshot = this.processingFluxHolder.get();
             if (ingestionFluxSnapshot == null) {
@@ -377,11 +314,11 @@ class BulkWriter implements AutoCloseable {
                 return;
             }
 
-            if (this.operationsScheduled.get() == 0) {
+            if (this.status.getOperationsScheduled().get() == 0) {
                 logger.info(
                     "Batch {} - No more pending writes when flush was called. Ingested {} items.",
                     this.identifier,
-                    this.operationsCompleted.get());
+                    this.status.getOperationsCompleted().get());
 
                 return;
             }
@@ -389,7 +326,7 @@ class BulkWriter implements AutoCloseable {
             logger.info(
                 "Batch {} - Flush called - waiting for {} pending items.",
                 this.identifier,
-                this.operationsScheduled.get());
+                this.status.getOperationsScheduled().get());
         }
 
         Instant lastSnapshot = Instant.EPOCH;
@@ -408,18 +345,13 @@ class BulkWriter implements AutoCloseable {
 
             if (finished) {
                 logger.info("Flush completed for batch [{}].", this.identifier);
-                this.updateStatusLastTime();
                 return;
             }
 
             if (Duration.between(lastSnapshot, Instant.now()).compareTo(Duration.ofMinutes(1)) > 0) {
                 lastSnapshot = Instant.now();
-                synchronized (this.lockObject) {
-                    List<String> samples = this
-                        .pendingOperations
-                        .stream()
-                        .limit(100)
-                        .collect(Collectors.toList());
+                synchronized (this.status.getLockObject()) {
+                    List<String> samples = this.status.getPendingOperationsSampleSnapshot(3);
 
                     String sampleSet = String.join(", ", samples);
 
@@ -427,79 +359,9 @@ class BulkWriter implements AutoCloseable {
                         "Batch {} still waiting for ingestion to complete. Operations "
                             + "pending {} (Sample set {})",
                         this.identifier,
-                        this.operationsScheduled,
+                        this.status.getOperationsScheduled(),
                         sampleSet);
                 }
-            }
-        }
-    }
-
-    private void updateStatus() {
-        try {
-            this.updateStatusCore(false);
-        } catch (Exception error) {
-            logger.error(
-                "Unhandled exception trying to update status. Ignoring this optimistically.",
-                error);
-        }
-    }
-
-    private void updateStatusLastTime() {
-        try {
-            this.updateStatusCore(true);
-        } catch (Exception error) {
-            logger.error(
-                "Unhandled exception trying to update status. Ignoring this optimistically.",
-                error);
-        }
-    }
-
-    private void updateStatusCore(boolean isLastUpdate) {
-
-        BatchRecord batch;
-        try {
-            batch = JobRepository.getBatch(this.jobId, this.blobName, this.index);
-            if (!Main.getMachineId().equalsIgnoreCase(batch.getOwningWorker())
-                && batch.getStatus() != IngestionStatus.COMPLETED) {
-
-                throw new OwnershipLostException(this.jobId, this.blobName, this.index);
-            }
-
-            batch.setOwningWorkerLastModified(Instant.now());
-            batch.setOwningWorker(Main.getMachineId());
-            if (batch.getRecordCount() == 0 || batch.getStatus() == IngestionStatus.COMPLETED
-                || (this.flushCalled.get() && this.operationsScheduled.get() == 0)) {
-                batch.setStatus(IngestionStatus.COMPLETED);
-                batch.setEstimatedProgress(1d);
-            } else {
-                batch.setStatus(IngestionStatus.STARTED);
-                batch.setEstimatedProgress(
-                    (double) this.operationsCompleted.get() / (double) batch.getRecordCount());
-            }
-
-            JobRepository.updateBatchRecord(batch);
-
-            if (isLastUpdate || batch.getStatus() == IngestionStatus.COMPLETED) {
-                if (!JobRepository.hasUnfinishedBatch(this.jobId, this.blobName)) {
-                    BlobStorage.purgeFromCache(this.blobName);
-                }
-            }
-        } catch (CosmosException cosmosException) {
-            if (cosmosException.getStatusCode() == 412
-                || cosmosException.getStatusCode() == 429
-                || cosmosException.getStatusCode() == 449) {
-
-                int delayInMs = rnd.nextInt(1000);
-                logger.info(
-                    "Transient error updating status for batch {} - retrying in {}ms...",
-                    this.identifier,
-                    delayInMs,
-                    cosmosException);
-
-                statusTrackingScheduler.schedule(
-                    isLastUpdate ? this::updateStatusLastTime : this::updateStatus,
-                    delayInMs,
-                    TimeUnit.MILLISECONDS);
             }
         }
     }
@@ -532,7 +394,7 @@ class BulkWriter implements AutoCloseable {
                 }
             })
             .doOnComplete(() -> {
-                logger.info("Ingestion for batch [{}] completed successfully.", this.identifier);
+                logger.debug("Ingestion for batch [{}] completed successfully.", this.identifier);
                 this.lock.lock();
                 try {
                     this.flushCompletedCondition.signal();
@@ -547,9 +409,15 @@ class BulkWriter implements AutoCloseable {
         CosmosItemOperation itemOperation,
         Exception exception) {
 
+        if (itemResponse != null) {
+            this.status.getRequestChargeTracker().addAndGet((long) (100L * itemResponse.getRequestCharge()));
+        } else if (exception instanceof CosmosException) {
+            this.status.getRequestChargeTracker().addAndGet((long) (100L * ((CosmosException)exception).getRequestCharge()));
+        }
+
         if (exception != null) {
             handleException(itemOperation, exception);
-        } else {
+        } else if (itemResponse != null) {
             processResponseCode(itemResponse, itemOperation);
         }
     }
@@ -567,25 +435,53 @@ class BulkWriter implements AutoCloseable {
             //re-scheduling
             scheduleRetry(itemOperation, itemResponse.getRetryAfterDuration(), null);
         } else {
-            throw new IllegalStateException(
-                "Bulk ingestion of item Batch ["
-                    + this.identifier
-                    + "], Line [" + ctx.getOffset()
-                    + "], ID [" + ctx.getId()
-                    + "], PK [" + itemOperation.getPartitionKeyValue()
-                    + "] failed [" + ctx.retryCount
-                    + "] times. Most recent failures is not retriable.");
+            this.status.addFailure(itemOperation.getItem(), createFailure(itemOperation, null));
+
+            logger.error(
+                "Bulk ingestion of item Batch [{}], ID [{}], PK [{}] failed [{}] times. "
+                + "Most recent failures is not retriable.",
+                this.identifier,
+                ctx.getId(),
+                itemOperation.getPartitionKeyValue(),
+                ctx.getRetryCount());
         }
+    }
+
+    private static BulkImportFailure createFailure(
+        CosmosItemOperation itemOperation,
+        Throwable cause) {
+
+        BulkImportFailure failure = new BulkImportFailure();
+        failure.setDocumentIdsFailedToImport(
+            List.of(itemOperation.<OperationContext>getContext().getId()));
+
+        if (cause != null) {
+            if (cause instanceof Exception) {
+                failure.setBulkImportFailureException((Exception) cause);
+            } else {
+                failure.setBulkImportFailureException(new RuntimeException(cause.getMessage(), cause));
+            }
+        }
+
+        Object doc = itemOperation.getItem();
+        try {
+            failure.setDocumentsFailedToImport(
+                List.of(Configs.mapper.writeValueAsString(doc))
+            );
+        } catch (JsonProcessingException e) {
+            failure.setDocumentsFailedToImport(List.of(e.toString()));
+        }
+
+        return failure;
     }
 
     private void handleException(CosmosItemOperation itemOperation, Exception exception) {
         OperationContext ctx = itemOperation.getContext();
         if (!(exception instanceof CosmosException)) {
             logger.error(
-                "The operation for Item Batch [{}], Line [{}], ID: [{}], PK: [{}] encountered"
+                "The operation for Item Batch [{}], ID: [{}], PK: [{}] encountered"
                     + " an unexpected failure, Retry will be attempted optimistically...",
                 ctx.getIdentifier(),
-                ctx.getOffset(),
                 ctx.getId(),
                 itemOperation.getPartitionKeyValue(),
                 exception);
@@ -598,14 +494,16 @@ class BulkWriter implements AutoCloseable {
             } else if (shouldRetry(cosmosException.getStatusCode())) {
                 scheduleRetry(itemOperation, cosmosException.getRetryAfterDuration(), exception);
             } else  {
-                throw new IllegalStateException(
-                    "Bulk ingestion of item Batch ["
-                        + this.identifier
-                        + "], Line [" + ctx.getOffset()
-                        + "], ID [" + ctx.getId()
-                        + "], PK [" + itemOperation.getPartitionKeyValue()
-                        + "] failed [" + ctx.retryCount
-                        + "] times. Most recent failures is not retriable.", cosmosException);
+                this.status.addFailure(itemOperation.getItem(), createFailure(itemOperation, cosmosException));
+
+                logger.error(
+                    "Bulk ingestion of item Batch [{}], ID [{}], PK [{}] failed [{}] times. "
+                    + "Most recent failures is not retriable.",
+                    this.identifier,
+                    ctx.getId(),
+                    itemOperation.getPartitionKeyValue(),
+                    ctx.getRetryCount(),
+                    cosmosException);
             }
         }
     }
@@ -614,20 +512,19 @@ class BulkWriter implements AutoCloseable {
 
         long scheduledCountSnapshot;
         long completedCountSnapshot;
-        synchronized (this.lockObject) {
-            if (!this.pendingOperations.remove(ctx.getId())) {
+        synchronized (this.status.getLockObject()) {
+            if (!this.status.getPendingOperations().remove(ctx.getId())) {
                 logger.warn(
-                    "No pending operation found for item Batch [{}], Line [{}], ID: [{}], PK: [{}]",
+                    "No pending operation found for item Batch [{}], ID: [{}], PK: [{}]",
                     ctx.getIdentifier(),
-                    ctx.getOffset(),
                     ctx.getId(),
                     itemOperation.getPartitionKeyValue());
             }
 
-            scheduledCountSnapshot = operationsScheduled.decrementAndGet();
-            completedCountSnapshot = operationsCompleted.incrementAndGet();
+            scheduledCountSnapshot = this.status.getOperationsScheduled().decrementAndGet();
+            completedCountSnapshot = this.status.getOperationsCompleted().incrementAndGet();
 
-            if (scheduledCountSnapshot == 0 && this.flushCalled.get()) {
+            if (scheduledCountSnapshot == 0 && this.status.getFlushCalled().get()) {
                 this.bulkInputEmitter.emitComplete(emitFailureHandler);
 
                 logger.info(
@@ -635,17 +532,14 @@ class BulkWriter implements AutoCloseable {
                     ctx.getIdentifier(),
                     completedCountSnapshot);
 
-                this.updateStatusLastTime();
-
                 return;
             }
         }
 
         logger.debug(
-            "The operation for Item Batch [{}], Line [{}], ID: [{}], PK: [{}] completed successfully " +
+            "The operation for Item Batch [{}], ID: [{}], PK: [{}] completed successfully " +
                 "with a response status code: [{}]",
             ctx.getIdentifier(),
-            ctx.getOffset(),
             ctx.getId(),
             itemOperation.getPartitionKeyValue(),
             statusCode);
@@ -658,55 +552,5 @@ class BulkWriter implements AutoCloseable {
             statusCode == 500 ||
             statusCode == 449 ||
             statusCode == 410;
-    }
-
-    private static class OperationContext {
-        private final String identifier;
-        private final long offset;
-        private final int retryCount;
-
-        private final String id;
-
-        public OperationContext(
-            String id,
-            String identifier,
-            long offset) {
-
-            this(id, identifier, offset, 0);
-        }
-
-        private OperationContext(
-            String id,
-            String identifier,
-            long offset,
-            int retryCount) {
-
-            Objects.requireNonNull(id, "Argument 'doc' must have a non-null 'id' property.");
-            Objects.requireNonNull(identifier, "Argument 'identifier' must not be null.");
-            this.id = id;
-            this.identifier = identifier;
-            this.offset = offset;
-            this.retryCount = retryCount;
-        }
-
-        public String getId() {
-            return this.id;
-        }
-
-        public String getIdentifier() {
-            return this.identifier;
-        }
-
-        public long getOffset() {
-            return this.offset;
-        }
-
-        public int getRetryCount() {
-            return this.retryCount;
-        }
-
-        public OperationContext createForRetry() {
-            return new OperationContext(this.id, this.identifier, this.offset, this.retryCount + 1);
-        }
     }
 }

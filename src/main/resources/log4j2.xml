@@ -28,5 +28,9 @@
       <AppenderRef ref="LogToConsole"/>
       <AppenderRef ref="LogToFile"/>
     </Root>
+    <Logger name="com.azure.cosmos.implementation.batch.BulkExecutor" level="WARN">
+      <AppenderRef ref="LogToConsole"/>
+      <AppenderRef ref="LogToFile"/>
+    </Logger>
   </Loggers>
 </Configuration>
