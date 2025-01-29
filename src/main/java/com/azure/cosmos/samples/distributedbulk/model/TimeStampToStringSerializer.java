@@ -11,6 +11,6 @@ public class TimeStampToStringSerializer extends JsonSerializer<Instant> {
     @Override
     public void serialize(Instant value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
         Instant effectiveValue = value == null ? Instant.EPOCH : value;
-        gen.writeString(String.valueOf(effectiveValue.toEpochMilli()));
+        gen.writeString(String.format("%018d", effectiveValue.toEpochMilli()));
     }
 }

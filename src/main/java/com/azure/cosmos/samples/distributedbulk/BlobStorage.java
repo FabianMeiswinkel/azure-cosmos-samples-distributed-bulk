@@ -190,4 +190,56 @@ public class BlobStorage {
 
         return inputFiles;
     }
+
+    public static List<InputFileInfo> searchWithUniformWildcard(String searchPatternRegex) {
+        Pattern pattern = Pattern.compile(searchPatternRegex);
+
+        List<InputFileInfo> inputFiles = Collections.synchronizedList(new ArrayList<>());
+
+        List<BlobItem> blobItems = inputClient
+            .listBlobs(new ListBlobsOptions(), null)
+            .stream()
+            .collect(Collectors.toList());
+
+        logger.info(
+            "Found {} items in blob container '{}'.",
+            blobItems.size(), "https://" + Configs.getBlobStorageAccountName() + ".blob.core.windows.net/");
+
+        long recordCount = -1;
+        long size = -1;
+
+        for (BlobItem blobItem: blobItems) {
+            String blobName = blobItem.getName();
+            if (pattern.matcher(blobName).matches()) {
+                if (recordCount < 0) {
+                    File cachedFile = ensureFile(blobName);
+
+                    try {
+                        BufferedReader reader = new BufferedReader(
+                            new FileReader(cachedFile.getAbsolutePath()));
+                        recordCount = reader.lines().count();
+                        size = cachedFile.length();
+                        reader.close();
+                    } catch (IOException e) {
+                        logger.error("Failed to read cached file '{}'", cachedFile, e);
+                    } finally {
+                        purgeFromCache(blobName);
+                    }
+                }
+
+                inputFiles.add(new InputFileInfo(blobName, size, recordCount));
+            }
+        }
+
+        if (inputFiles.size() == 0) {
+            throw new IllegalStateException(
+                "No input files in the blob container "
+                    + inputClient.getBlobContainerUrl()
+                    + " found for search pattern regex '"
+                    + searchPatternRegex
+                    + "'.");
+        }
+
+        return inputFiles;
+    }
 }

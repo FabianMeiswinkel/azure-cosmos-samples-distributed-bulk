@@ -91,6 +91,10 @@ public class Main {
                 JobId = args[1];
                 System.exit(createJob(args[1], args[2]));
                 return;
+            } else if (args.length == 3 && "createUniform".equalsIgnoreCase(args[0])) {
+                JobId = args[1];
+                System.exit(createUniformJob(args[1], args[2]));
+                return;
             } else if (args.length == 2 && "monitor".equalsIgnoreCase(args[0])) {
                 JobId = args[1];
             } else if (args.length == 2 && "delete".equalsIgnoreCase(args[0])) {
@@ -132,6 +136,9 @@ public class Main {
         System.out.println("    create <JobID> <InputFileSearchPattern>");
         logger.error("    create <JobID> <InputFileSearchPattern>");
 
+        System.out.println("    createUniform <JobID> <InputFileSearchPattern>");
+        logger.error("    createUniform <JobID> <InputFileSearchPattern>");
+
         System.out.println("    monitor <JobID>");
         logger.error("    monitor <JobID>");
 
@@ -168,6 +175,30 @@ public class Main {
 
             List<InputFileInfo> inputFiles =
                 BlobStorage.searchWithWildcard(inputFileSearchPattern);
+
+            JobRepository.createNewJob(jobId, inputFiles);
+
+            return ErrorCodes.SUCCESS;
+        } catch (Exception error) {
+            logger.error(
+                "Attempt to create job with ID {} and input file search pattern {} failed.",
+                jobId,
+                inputFileSearchPattern,
+                error);
+
+            return ErrorCodes.FAILED;
+        }
+    }
+
+    private static int createUniformJob(
+        String jobId,
+        String inputFileSearchPattern) {
+
+        try {
+            JobRepository.ensureJobDoesNotExistYet(jobId);
+
+            List<InputFileInfo> inputFiles =
+                BlobStorage.searchWithUniformWildcard(inputFileSearchPattern);
 
             JobRepository.createNewJob(jobId, inputFiles);
 

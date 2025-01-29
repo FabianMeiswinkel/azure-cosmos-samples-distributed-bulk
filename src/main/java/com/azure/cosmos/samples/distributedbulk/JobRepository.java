@@ -67,20 +67,26 @@ public class JobRepository {
         }
     }
 
-    public synchronized static BatchRecord findBatchProcessingCandidate(int threadId, String jobId) {
-        long ownerShipExpiration = Instant.now().minus(5, ChronoUnit.MINUTES).toEpochMilli();
+    public static synchronized BatchRecord findBatchProcessingCandidate(int threadId, String jobId) {
+        String ownerShipExpiration =
+            String.format(
+                "%018d",
+                Instant.now().minus(5, ChronoUnit.MINUTES).toEpochMilli());
         CosmosQueryRequestOptions queryOptions = new CosmosQueryRequestOptions()
             .setPartitionKey(new PartitionKey(jobId))
             .setQueryName("FindBatchCandidate")
-            .setDiagnosticsThresholds(new CosmosDiagnosticsThresholds()
-                .setNonPointOperationLatencyThreshold(Duration.ofSeconds(5)));
+            .setDiagnosticsThresholds(
+                new CosmosDiagnosticsThresholds()
+                    .setNonPointOperationLatencyThreshold(Duration.ofSeconds(15))
+            );
 
         List<SqlParameter> parameters = new ArrayList<>();
         parameters.add(new SqlParameter("@CompletedStatus", IngestionStatus.COMPLETED));
         parameters.add(new SqlParameter("@OwnershipExpiration", ownerShipExpiration));
+        parameters.add(new SqlParameter("@PK", jobId));
 
         SqlQuerySpec query = new SqlQuerySpec()
-            .setQueryText("SELECT * FROM c WHERE c.recordType = \"B\" AND c.status != @CompletedStatus AND"
+            .setQueryText("SELECT TOP 1 * FROM c WHERE c.pk = @PK AND c.recordType = \"B\" AND c.status != @CompletedStatus AND"
                 + "(c.owningWorkerLastModified < @OwnershipExpiration OR IS_NULL(c.owningWorker) "
                 + "OR c.owningWorker=\"\")")
             .setParameters(parameters);
@@ -91,22 +97,15 @@ public class JobRepository {
             parameters.get(0).getName(),
             parameters.get(0).getValue(String.class),
             parameters.get(1).getName(),
-            parameters.get(1).getValue(Long.class));
-        CosmosPagedFlux<BatchRecord> batchPagedFlux = jobContainer.queryItems(
+            parameters.get(1).getValue(String.class));
+        List<BatchRecord> records = jobContainer.queryItems(
             query,
             queryOptions,
             BatchRecord.class
-        );
+        ).collectList().block();
 
-        CosmosPagedIterable<BatchRecord> batchPagedIterable = new CosmosPagedIterable<>(
-            batchPagedFlux,
-            1
-        );
-
-        Iterator<BatchRecord> candidatesIterator = batchPagedIterable.iterator();
-
-        if (candidatesIterator.hasNext()) {
-            BatchRecord record = candidatesIterator.next();
+        if (records.size() > 0) {
+            BatchRecord record = records.get(0);
             logger.debug("Batch processor '{}' on machine '{}' found candidate '{}'.",
                 threadId,
                 Main.getMachineId(),
@@ -128,19 +127,23 @@ public class JobRepository {
         return hasUnfinishedBatchCore(jobId, String.join("|", jobId, ""));
     }
 
-    private synchronized static boolean hasUnfinishedBatchCore(String jobId, String prefix) {
+    private static synchronized boolean hasUnfinishedBatchCore(String jobId, String prefix) {
         CosmosQueryRequestOptions queryOptions = new CosmosQueryRequestOptions()
             .setPartitionKey(new PartitionKey(jobId))
             .setQueryName("FindUnfinishedBatch")
-            .setDiagnosticsThresholds(new CosmosDiagnosticsThresholds()
-                .setNonPointOperationLatencyThreshold(Duration.ofSeconds(5)));
+            .setDiagnosticsThresholds(
+                new CosmosDiagnosticsThresholds()
+                    .setNonPointOperationLatencyThreshold(Duration.ofSeconds(15))
+            )
+            .setMaxBufferedItemCount(3);
 
         List<SqlParameter> parameters = new ArrayList<>();
         parameters.add(new SqlParameter("@CompletedStatus", IngestionStatus.COMPLETED));
         parameters.add(new SqlParameter("@IdPrefix", prefix));
+        parameters.add(new SqlParameter("@PK", jobId));
 
         SqlQuerySpec query = new SqlQuerySpec()
-            .setQueryText("SELECT c.id FROM c WHERE c.recordType = \"B\" AND c.status != @CompletedStatus AND STARTSWITH(c.id, @IdPrefix)")
+            .setQueryText("SELECT TOP 1 c.id FROM c WHERE c.pk = @PK AND c.recordType = \"B\" AND c.status != @CompletedStatus AND STARTSWITH(c.id, @IdPrefix)")
             .setParameters(parameters);
         logger.debug("Executing query {} - {} - {}: {}, {}: {}",
             "FindUnfinishedBatch",
@@ -149,34 +152,28 @@ public class JobRepository {
             parameters.get(0).getValue(String.class),
             parameters.get(1).getName(),
             parameters.get(1).getValue(String.class));
-        CosmosPagedFlux<ObjectNode> batchPagedFlux = jobContainer.queryItems(
+        List<ObjectNode> idNodes = jobContainer.queryItems(
             query,
             queryOptions,
             ObjectNode.class
-        );
+        ).collectList().block();
 
-        CosmosPagedIterable<ObjectNode> batchPagedIterable = new CosmosPagedIterable<>(
-            batchPagedFlux,
-            1
-        );
-
-        Iterator<ObjectNode> candidatesIterator = batchPagedIterable.iterator();
-
-        boolean hasNext = candidatesIterator.hasNext();
-
-        if (hasNext) {
-            logger.debug("Machine '{}' found some unfinished batch with prefix '{}' for job '{}'.",
+        if (idNodes.size() > 0) {
+            logger.debug("Machine '{}' found some unfinished batch {} with prefix '{}' for job '{}'.",
                 Main.getMachineId(),
+                idNodes.get(0).get("id").asText(),
                 prefix,
                 jobId);
+
+            return true;
         } else {
-            logger.info("Machine '{}' could not find any unfinished batch with prefix '{}' for job '{}'",
+            logger.debug("Machine '{}' could not find any unfinished batch with prefix '{}' for job '{}'",
                 Main.getMachineId(),
                 prefix,
                 jobId);
-        }
 
-        return hasNext;
+            return false;
+        }
     }
 
     public static void deleteJob(String jobId) {

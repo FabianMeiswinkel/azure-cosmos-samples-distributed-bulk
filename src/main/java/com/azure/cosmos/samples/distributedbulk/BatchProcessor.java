@@ -48,7 +48,8 @@ public class BatchProcessor {
         public void run() {
             while(true) {
                 try {
-                    if (runCore()) {
+                    boolean isCompleted = runCore();
+                    if (isCompleted) {
                         // All batches completed
                         return;
                     }
@@ -75,14 +76,26 @@ public class BatchProcessor {
         private boolean runCore() throws InterruptedException {
             Batch currentBatch = tryAcquireBatch();
             if (currentBatch == null) {
-                logger.info("No incomplete batch could be acquired anymore. Retrying in 1 minute...");
-                Thread.sleep(60_000);
+                int delayInMs = 30000 + rnd.nextInt(5_000);
+                logger.info("No incomplete batch could be acquired anymore. Retrying in {}ms...", delayInMs);
+                Thread.sleep(delayInMs);
 
-                return !JobRepository.hasUnfinishedBatch(jobId);
+                boolean isComplete = !JobRepository.hasUnfinishedBatch(jobId);
+                if (isComplete) {
+                    return true;
+                }
+
+                delayInMs = 10000 + rnd.nextInt(5_000);
+                logger.info("Still waiting for some acquired batches to finish. Retrying in {}ms...", delayInMs);
+                Thread.sleep(delayInMs);
+
+                return false;
             }
 
             currentBatch.run();
-            return !JobRepository.hasUnfinishedBatch(jobId);
+            boolean isComplete = !JobRepository.hasUnfinishedBatch(jobId);
+            logger.info("IsComplete after batch: {}", isComplete);
+            return isComplete;
         }
 
         private BatchRecord findBatchProcessingCandidate(String jobId) {

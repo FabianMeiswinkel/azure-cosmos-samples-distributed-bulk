@@ -107,7 +107,7 @@ public class Batch implements Runnable {
 
             statusTrackingScheduler.schedule(
                 this::updateStatus,
-                50000 + rnd.nextInt(20000),
+                5000 + rnd.nextInt(5000),
                 TimeUnit.MILLISECONDS);
 
             bulkExecutor.upsertAll(
@@ -161,13 +161,20 @@ public class Batch implements Runnable {
                     (double) this.status.getOperationsCompleted().get() / (double) batch.getRecordCount());
             }
 
-            JobRepository.updateBatchRecord(batch);
+            batch = JobRepository.updateBatchRecord(batch);
 
             if (isLastUpdate || batch.getStatus() == IngestionStatus.COMPLETED) {
                 if (!JobRepository.hasUnfinishedBatch(this.jobId, this.blobName)) {
                     BlobStorage.purgeFromCache(this.blobName);
+
+                    return;
                 }
             }
+
+            statusTrackingScheduler.schedule(
+                isLastUpdate ? this::updateStatusLastTime : this::updateStatus,
+                5000 + rnd.nextInt(5000),
+                TimeUnit.MILLISECONDS);
         } catch (CosmosException cosmosException) {
             if (cosmosException.getStatusCode() == 412
                 || cosmosException.getStatusCode() == 429
