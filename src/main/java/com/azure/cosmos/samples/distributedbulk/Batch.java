@@ -151,8 +151,13 @@ public class Batch implements Runnable {
 
             batch.setOwningWorkerLastModified(Instant.now());
             batch.setOwningWorker(Main.getMachineId());
-            if (batch.getRecordCount() == 0 || batch.getStatus() == IngestionStatus.COMPLETED
+            double oldestimatedProgress = batch.getEstimatedProgress();
+            IngestionStatus oldStatus = batch.getStatus();
+            if (batch.getRecordCount() == 0
+                || batch.getStatus() == IngestionStatus.COMPLETED
+                || batch.getRecordCount() <= this.status.getOperationsCompleted().get()
                 || (this.status.getFlushCalled().get() && this.status.getOperationsScheduled().get() == 0)) {
+
                 batch.setStatus(IngestionStatus.COMPLETED);
                 batch.setEstimatedProgress(1d);
             } else {
@@ -161,7 +166,12 @@ public class Batch implements Runnable {
                     (double) this.status.getOperationsCompleted().get() / (double) batch.getRecordCount());
             }
 
-            batch = JobRepository.updateBatchRecord(batch);
+            // only renew ownership of the batch when there was any progress made
+            // just allows other workers to pick-up the batch in the case the current worker
+            // does not make any progress within 5 minutes
+            if (oldStatus != batch.getStatus() || oldestimatedProgress != batch.getEstimatedProgress()) {
+                batch = JobRepository.updateBatchRecord(batch);
+            }
 
             if (isLastUpdate || batch.getStatus() == IngestionStatus.COMPLETED) {
                 if (!JobRepository.hasUnfinishedBatch(this.jobId, this.blobName)) {
@@ -180,7 +190,7 @@ public class Batch implements Runnable {
                 || cosmosException.getStatusCode() == 429
                 || cosmosException.getStatusCode() == 449) {
 
-                int delayInMs = rnd.nextInt(1000);
+                int delayInMs = 10000 + 50 * rnd.nextInt(100);
                 logger.info(
                     "Transient error updating status for batch {} - retrying in {}ms...",
                     this.status.getOperationId(),

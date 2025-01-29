@@ -128,7 +128,7 @@ public class BatchProcessor {
                         throw cosmosException;
                     }
 
-                    int delayInMs = 1000 + 100 * rnd.nextInt(50);
+                    int delayInMs = 100 + 50 * rnd.nextInt(50);
 
                     logger.info(
                         "Conflict when trying to acquire batch '{}', Retrying to acquire another batch in {} ms.",
