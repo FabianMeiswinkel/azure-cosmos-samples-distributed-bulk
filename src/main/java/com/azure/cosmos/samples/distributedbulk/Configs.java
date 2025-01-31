@@ -3,41 +3,29 @@ package com.azure.cosmos.samples.distributedbulk;
 import com.azure.core.credential.TokenCredential;
 import com.azure.cosmos.ConsistencyLevel;
 import com.azure.cosmos.CosmosAsyncClient;
-import com.azure.cosmos.CosmosClient;
-import com.azure.cosmos.CosmosContainer;
 import com.azure.cosmos.CosmosClientBuilder;
 import com.azure.cosmos.CosmosDiagnosticsHandler;
 import com.azure.cosmos.CosmosDiagnosticsThresholds;
 import com.azure.cosmos.CosmosEndToEndOperationLatencyPolicyConfigBuilder;
-import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.CosmosOperationPolicy;
 import com.azure.cosmos.GatewayConnectionConfig;
 import com.azure.cosmos.ThrottlingRetryOptions;
 import com.azure.cosmos.models.CosmosClientTelemetryConfig;
 import com.azure.cosmos.models.CosmosRequestOptions;
-import com.azure.cosmos.samples.distributedbulk.model.WriteStrategy;
 import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import java.util.function.Function;
 
 public final class Configs {
     final static ObjectMapper mapper = new ObjectMapper();
-    private static final Logger logger = LoggerFactory.getLogger(Configs.class);
     private static final TokenCredential credential = new DefaultAzureCredentialBuilder()
         .managedIdentityClientId(Configs.getAadManagedIdentityId())
         .authorityHost(Configs.getAadLoginUri())
         .tenantId(Configs.getAadTenantId())
         .build();
-
-    private final static WriteStrategy writeStrategy = getWriteStrategyCore();
-
-    private final static AtomicInteger maxConcurrentPartitionCount = new AtomicInteger(-1);
 
      /**
      * Returns the given string if it is nonempty; {@code null} otherwise.
@@ -59,34 +47,6 @@ public final class Configs {
 
     public static String getAccountEndpoint() {
         return getRequiredConfigProperty("ACCOUNT_ENDPOINT", v -> v);
-    }
-
-    public static int getMaxConcurrentPartitionCount() {
-        int snapshot = maxConcurrentPartitionCount.get();
-        if (snapshot >= 1024) {
-            return snapshot;
-        }
-
-        try (CosmosClient client = getCosmosClient("Configs")) {
-            CosmosContainer targetContainer = client
-                .getDatabase(getCosmosDatabaseName())
-                .getContainer(getCosmosContainerName());
-
-            int partitionCount = targetContainer.getFeedRanges().size();
-            int targetMaxConcurrentPartitionCount = Math.max(1024, 5 * partitionCount);
-            return maxConcurrentPartitionCount
-                .compareAndExchange(snapshot, targetMaxConcurrentPartitionCount);
-
-        } catch (CosmosException cosmosException) {
-            logger.error(
-                "Can't identify partition count of target container '{}'.",
-                Configs.getCosmosContainerName());
-
-            throw new IllegalStateException(
-                "Can't identify partition count of target container '"
-                    + Configs.getCosmosContainerName()
-                    + "'.", cosmosException);
-        }
     }
 
     public static int getMaxRecordsPerBatch() {
@@ -221,11 +181,6 @@ public final class Configs {
                 .setMaxRetryAttemptsOnThrottledRequests(999_999)
                 .setMaxRetryWaitTime(Duration.ofSeconds(65)));
     }
-
-    public static CosmosClient getCosmosClient(String userAgentSuffix) {
-        return getCosmosClientBuilder(userAgentSuffix).buildClient();
-    }
-
     public static CosmosAsyncClient getCosmosAsyncClient(String userAgentSuffix) {
         return getCosmosClientBuilder(userAgentSuffix).buildAsyncClient();
     }
