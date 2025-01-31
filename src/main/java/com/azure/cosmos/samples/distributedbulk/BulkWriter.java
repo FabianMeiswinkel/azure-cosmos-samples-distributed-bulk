@@ -224,7 +224,7 @@ class BulkWriter implements AutoCloseable {
         if (retryCount > 0 || retryAfterDuration != null) {
             // min 10ms per retry - max 1 second per retry
             int delayInMs = Math.max(
-                10 * retryCount + rnd.nextInt( 990 * retryCount),
+                10 * retryCount + rnd.nextInt( 990 * Math.max(1, retryCount)),
                 retryAfterDuration != null ? Math.min((int)retryAfterDuration.toMillis(), 5000) : 0);
             logger.warn(
                 "Item Batch {}, Id {} failed already {} times. Retrying again in {}ms.",
