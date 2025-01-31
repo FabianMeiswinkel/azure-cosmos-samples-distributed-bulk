@@ -131,17 +131,6 @@ public final class Configs {
             Integer::parseInt);
     }
 
-    public static WriteStrategy getWriteStrategy() {
-        return writeStrategy;
-    }
-
-    private static WriteStrategy getWriteStrategyCore() {
-        return getOptionalConfigProperty(
-            "WRITE_STRATEGY",
-            WriteStrategy.UPSERT,
-            WriteStrategy::fromValue);
-    }
-
     public static String getCosmosDatabaseName() {
         return getRequiredConfigProperty("CDB_DATABASE_NAME", v -> v);
     }
