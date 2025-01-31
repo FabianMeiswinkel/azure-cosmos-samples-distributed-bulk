@@ -87,6 +87,9 @@
                  <descriptorRef>jar-with-dependencies</descriptorRef>
                </descriptorRefs>
                <archive>
+                 <manifestEntries>
+                   <Multi-Release>true</Multi-Release>
+                 </manifestEntries>
                  <manifest>
                    <mainClass>com.azure.cosmos.samples.distributedbulk.Main</mainClass>
                  </manifest>

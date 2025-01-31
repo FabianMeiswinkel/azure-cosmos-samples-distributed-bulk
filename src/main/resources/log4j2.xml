@@ -5,7 +5,7 @@
     </Console>
     <RollingFile name="LogToFile"
                  fileName="logs/app.log"
-                 filePattern="logs/app-%d{yyyy-MM-dd}.log">
+                 filePattern="logs/app-%d{yyyy-MM-dd-HH}_%i.log">
       <PatternLayout>
         <pattern>[%-5level] %d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %c{1} - %msg%n
         </pattern>
