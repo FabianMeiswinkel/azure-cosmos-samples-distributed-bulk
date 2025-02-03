@@ -1,6 +1,7 @@
 package com.azure.cosmos.samples.distributedbulk;
 
 import com.azure.core.credential.TokenCredential;
+import com.azure.cosmos.ConnectionMode;
 import com.azure.cosmos.ConsistencyLevel;
 import com.azure.cosmos.CosmosAsyncClient;
 import com.azure.cosmos.CosmosClientBuilder;
@@ -8,6 +9,7 @@ import com.azure.cosmos.CosmosDiagnosticsHandler;
 import com.azure.cosmos.CosmosDiagnosticsThresholds;
 import com.azure.cosmos.CosmosEndToEndOperationLatencyPolicyConfigBuilder;
 import com.azure.cosmos.CosmosOperationPolicy;
+import com.azure.cosmos.DirectConnectionConfig;
 import com.azure.cosmos.GatewayConnectionConfig;
 import com.azure.cosmos.ThrottlingRetryOptions;
 import com.azure.cosmos.models.CosmosClientTelemetryConfig;
@@ -82,6 +84,19 @@ public final class Configs {
             "MAX_MICRO_BATCH_SIZE",
             100,
             Integer::parseInt);
+    }
+
+    public static String getConnectionMode() {
+        return getOptionalConfigProperty(
+            "CONNECTION_MODE",
+            ConnectionMode.GATEWAY.toString(),
+            (s) -> {
+                if ("direct".equalsIgnoreCase(s)) {
+                    return ConnectionMode.DIRECT.toString();
+                } else {
+                    return ConnectionMode.GATEWAY.toString();
+                }
+            });
     }
 
     public static int getMaxMicroBatchConcurrencyPerPartition() {
@@ -164,14 +179,62 @@ public final class Configs {
             }
         };
 
-        GatewayConnectionConfig gwConfig = new GatewayConnectionConfig()
-            .setIdleConnectionTimeout(Duration.ofSeconds(60))
-            .setMaxConnectionPoolSize(10000);
+        if (System.getProperty("reactor.netty.tcp.sslHandshakeTimeout") == null) {
+            System.setProperty("reactor.netty.tcp.sslHandshakeTimeout", "20000");
+        }
 
-        return new CosmosClientBuilder()
+        if (System.getProperty("COSMOS.HTTP_MAX_REQUEST_TIMEOUT") == null) {
+            System.setProperty(
+                "COSMOS.HTTP_MAX_REQUEST_TIMEOUT",
+                "70");
+        }
+
+        String overrideJson = "{\"timeoutDetectionEnabled\": true, \"timeoutDetectionDisableCPUThreshold\": 75.0," +
+            "\"timeoutDetectionTimeLimit\": \"PT90S\", \"timeoutDetectionHighFrequencyThreshold\": 10," +
+            "\"timeoutDetectionHighFrequencyTimeLimit\": \"PT30S\", \"timeoutDetectionOnWriteThreshold\": 10," +
+            "\"timeoutDetectionOnWriteTimeLimit\": \"PT90s\", \"tcpNetworkRequestTimeout\": \"PT7S\", " +
+            "\"connectTimeout\": \"PT10S\", \"maxChannelsPerEndpoint\": \"130\"}";
+
+        if (System.getProperty("reactor.netty.tcp.sslHandshakeTimeout") == null) {
+            System.setProperty("reactor.netty.tcp.sslHandshakeTimeout", "20000");
+        }
+
+        if (System.getProperty("COSMOS.HTTP_MAX_REQUEST_TIMEOUT") == null) {
+            System.setProperty(
+                "COSMOS.HTTP_MAX_REQUEST_TIMEOUT",
+                "70");
+        }
+
+        if (System.getProperty("COSMOS.DEFAULT_HTTP_CONNECTION_POOL_SIZE") == null) {
+            System.setProperty(
+                "COSMOS.DEFAULT_HTTP_CONNECTION_POOL_SIZE",
+                "25000");
+        }
+
+        if (System.getProperty("azure.cosmos.directTcp.defaultOptions") == null) {
+            System.setProperty("azure.cosmos.directTcp.defaultOptions", overrideJson);
+        }
+
+        CosmosClientBuilder builder = new CosmosClientBuilder()
             .credential(credential)
-            .endpoint(getAccountEndpoint())
-            .gatewayMode(gwConfig)
+            .endpoint(getAccountEndpoint());
+
+        if (ConnectionMode.DIRECT.toString().equals(getConnectionMode())) {
+            GatewayConnectionConfig gwConfig = new GatewayConnectionConfig()
+                .setIdleConnectionTimeout(Duration.ofSeconds(70))
+                .setMaxConnectionPoolSize(10000);
+            DirectConnectionConfig directConfig = new DirectConnectionConfig()
+                .setConnectTimeout(Duration.ofSeconds(10))
+                .setNetworkRequestTimeout(Duration.ofSeconds(10));
+            builder = builder.directMode(directConfig, gwConfig);
+        } else {
+            GatewayConnectionConfig gwConfig = new GatewayConnectionConfig()
+                .setIdleConnectionTimeout(Duration.ofSeconds(70))
+                .setMaxConnectionPoolSize(25000);
+            builder = builder.gatewayMode(gwConfig);
+        }
+
+        return builder
             .contentResponseOnWriteEnabled(false)
             .userAgentSuffix(effectiveUserAgentSuffix)
             .consistencyLevel(ConsistencyLevel.SESSION)
@@ -238,7 +301,7 @@ public final class Configs {
         String environmentVariableName = "COSMOS_" + name;
         String fromSystemProperty = emptyToNull(System.getProperty(systemPropertyName));
         if (fromSystemProperty != null) {
-            return null;
+            return fromSystemProperty;
         }
 
         return emptyToNull(System.getenv().get(environmentVariableName));

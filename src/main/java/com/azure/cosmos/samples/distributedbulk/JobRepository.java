@@ -71,7 +71,7 @@ public class JobRepository {
         String ownerShipExpiration =
             String.format(
                 "%018d",
-                Instant.now().minus(5, ChronoUnit.MINUTES).toEpochMilli());
+                Instant.now().minus(15, ChronoUnit.MINUTES).toEpochMilli());
         CosmosQueryRequestOptions queryOptions = new CosmosQueryRequestOptions()
             .setPartitionKey(new PartitionKey(jobId))
             .setQueryName("FindBatchCandidate")

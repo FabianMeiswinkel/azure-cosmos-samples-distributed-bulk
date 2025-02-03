@@ -1,5 +1,6 @@
 package com.azure.cosmos.samples.distributedbulk;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -26,6 +27,8 @@ public class DocumentBulkExecutorOperationStatus {
 
     private final List<Object> badInputDocuments;
 
+    private final Instant startedAt;
+
     public DocumentBulkExecutorOperationStatus() {
         this(UUID.randomUUID().toString());
     }
@@ -41,6 +44,7 @@ public class DocumentBulkExecutorOperationStatus {
         this.lockObject = UUID.randomUUID().toString();
         this.failures = new CopyOnWriteArrayList<>();
         this.badInputDocuments = new CopyOnWriteArrayList<>();
+        this.startedAt = Instant.now();
     }
 
     public AtomicBoolean getFlushCalled() {
@@ -69,6 +73,10 @@ public class DocumentBulkExecutorOperationStatus {
 
     public List<Object> getBadInputDocumentsSnapshot() {
         return this.badInputDocuments;
+    }
+
+    public Instant getStartedAt() {
+        return this.startedAt;
     }
 
     public String getOperationId() {

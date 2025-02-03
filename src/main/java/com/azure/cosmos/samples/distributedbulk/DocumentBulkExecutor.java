@@ -97,8 +97,9 @@ public class DocumentBulkExecutor<T> {
             List<BulkImportFailure> failures = status.getFailuresSnapshot();
 
             logger.info(
-                "Completed {}. Ingested {} docs, Total RU: {}, Bad Documents: {}, Failures: {}.",
+                "Completed {}. Duration: {}, Ingested {} docs, Total RU: {}, Bad Documents: {}, Failures: {}.",
                 status.getOperationId(),
+                Duration.between(status.getStartedAt(), Instant.now()).toString(),
                 status.getOperationsCompleted().get(),
                 status.getTotalRequestChargeSnapshot(),
                 badInputDocs != null ? badInputDocs.size() : 0,
